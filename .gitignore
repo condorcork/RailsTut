@@ -32,3 +32,5 @@
 # Emacs
 /*~
 /\#*
+# Ignore Spring files.
+/spring/*.pid
