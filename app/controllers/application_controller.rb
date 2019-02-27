@@ -1,6 +1,8 @@
+# coding: utf-8
 class ApplicationController < ActionController::Base
+#  protect_from_forgery with: :exception    自動で　セットされない
+  protect_from_forgery with: :exception
+## 
+  include SessionsHelper
 
-  def hello
-    render html: "hello, world!"
-  end
 end
