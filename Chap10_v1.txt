@@ -1,0 +1,2280 @@
+第10章
+ユーザーの更新・表示・削除
+この章では、Usersリソース用のRESTアクション (表 7.1) のうち、これまで未実装だったedit、update、index、destroyアクションを加え、RESTアクションを完成させます。
+本章ではまず、ユーザーが自分のプロフィールを自分で更新できるようにします。
+ここで早速第8章で実装した認証用のコードを使いますが、これが認可モデル (Authorization Model) について説明する自然なキッカケになります。
+次に、すべてのユーザーを一覧できるようにします (もちろん認証を要求します)。
+これはサンプルデータとページネーション (pagination) を導入する動機にもなります。
+最後に、ユーザーを削除し、データベースから完全に消去する機能を追加します。
+ユーザーの削除はどのユーザーにも許可できるものではないので、管理ユーザーという特権クラスを作成し、このユーザーにのみ削除を許可するようにします。
+
+
+#-----------------------------
+[_ 10.1 ] ユーザーを更新する
+#-----------------------------
+
+ユーザー情報を編集するパターンは、新規ユーザーの作成と極めて似通っています (第7章)。
+新規ユーザー用のビューを出力するnewアクションと同じようにして、ユーザーを編集するためのeditアクションを作成すればよいのです。
+同様に、POSTリクエストに応答するcreateの代わりに、PATCHリクエストに応答するupdateアクションを作成します (コラム 3.2)。
+最大の違いは、ユーザー登録は誰でも実行できますが、ユーザー情報を更新できるのはそのユーザー自身に限られるということです。
+第8章で実装した認証機構を使えば、beforeフィルター (before filter) を使ってこのアクセス制御を実現できます。
+
+では最初に、いつものようにupdating-usersトピックブランチを作成しましょう。
+
+$ git checkout -b updating-users
+
+#-----------------------------------------------------
+[__ 10.1.1 ] 編集フォーム
+#-----------------------------------------------------
+
+まずは編集フォームから始めます。
+モックアップは図 10.11。
+図 10.1のモックアップを動くページにするためには、Usersコントローラにeditアクションを追加して、それに対応するeditビューを実装する必要があります。
+editアクションの実装から始めますが、ここではデータベースから適切なユーザーデータを読み込む必要があります。
+ここで注意して頂きたいのは、表 7.1ではユーザー編集ページの正しいURLが/users/1/editとなっていることです (ユーザーのidが1の場合)。
+ユーザーのidはparams[:id]変数で取り出すことができるのを思い出してください。
+つまり、リスト 10.1のコードを使えばそのユーザーを指定できるということです。
+
+
+#.....................
+images/figures/edit_user_mockup_bootstrap
+  ==> edit_user_mockup_bootstrap.png
+図 10.1: ユーザー編集ページのモックアップ
+#.....................
+
+##..............................
+リスト 10.1: ユーザーのeditアクション
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def show
+    @user = User.find(params[:id])
+  end
+
+  def new
+    @user = User.new
+  end
+
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      log_in @user
+      flash[:success] = "Welcome to the Sample App!"
+      redirect_to @user
+    else
+      render 'new'
+    end
+  end
+
+  def edit
+    @user = User.find(params[:id])
+  end
+
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+end
+#..............................
+
+ユーザー編集ページに対応するビューを、リスト 10.2に示します (このファイルは手動で作成する必要があります)。
+このコードがリスト 7.15と極めて似通っていることに注目してください。
+重複が多いということは、それらのコードの繰り返しをパーシャルにまとめることができるということです。
+今回は、パーシャルにまとめる作業は演習の課題に回すことにします (10.1.1.1)。
+
+##..............................
+リスト 10.2: ユーザーのeditビュー
+#...............................
+app/views/users/edit.html.erb
+ <% provide(:title, "Edit user") %>
+<h1>Update your profile</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user) do |f| %>
+      <%= render 'shared/error_messages' %>
+
+      <%= f.label :name %>
+      <%= f.text_field :name, class: 'form-control' %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+      <%= f.submit "Save changes", class: "btn btn-primary" %>
+    <% end %>
+
+    <div class="gravatar_edit">
+      <%= gravatar_for @user %>
+      <a href="http://gravatar.com/emails" target="_blank">change</a>
+    </div>
+  </div>
+</div>
+#..............................
+
+上のコードでは、リスト 7.3.3で導入したerror_messagesパーシャルを再利用しています。
+ところで、Gravatarへのリンクでtarget="_blank"が使われていますが、これを使うとリンク先を新しいタブ (またはウィンドウ) で開くようになるので、別のWebサイトへリンクするときなどに便利です (ただしtarget="_blank"にはセキュリティ上の小さな問題もあります。
+詳しくは10.1.1.1の演習で見ていきましょう)。
+
+リスト 10.1の@userインスタンス変数を使うと、編集ページがうまく描画されるようになります (図 10.2)。
+図 10.2の"Name"や"Email"の部分を見ると、Railsによって名前やメールアドレスのフィールドに値が自動的に入力されていることがわかります。
+これらの値は、@user変数の属性情報から引き出されています。
+
+
+#.....................
+images/figures/edit_page_3rd_edition
+  ==> edit_page_3rd_edition.png
+図 10.2: 名前とメールアドレスが入力済みの、初期状態のユーザー編集ページ
+#.....................
+
+図 10.2のHTMLソースを見てみると、少しだけ違う箇所もありますが、おおよそformタグは期待どおりに表示されています (リスト 10.3)。
+
+##..............................
+リスト 10.3: リスト 10.2で定義されたeditフォーム (図 10.2) のHTML
+#...............................
+<form accept-charset="UTF-8" action="/users/1" class="edit_user"
+      id="edit_user_1" method="post">
+  <input name="_method" type="hidden" value="patch" />
+  .
+  .
+  .
+</form>
+#..............................
+
+次の入力フィールドに隠し属性があることに注目してください。
+
+<input name="_method" type="hidden" value="patch" />
+WebブラウザはネイティブではPATCHリクエスト (表 7.1でRESTの慣習として要求されている) を送信できないので、RailsはPOSTリクエストと隠しinputフィールドを利用してPATCHリクエストを「偽造」しています2。
+
+ここでもう1つ微妙な点を指摘しておきたいと思います。
+リスト 10.2のform_for(@user)のコードは、リスト 7.15のコードと完全に同じです。
+だとすると、Railsはどうやって新規ユーザー用のPOSTリクエストとユーザー編集用のPATCHリクエストを区別するのでしょうか。
+その答えは、Railsは、ユーザーが新規なのか、それともデータベースに存在する既存のユーザーであるかを、Active Recordのnew_record?論理値メソッドを使って区別できるからです。
+
+$ rails console
+>> User.new.new_record?
+=> true
+>> User.first.new_record?
+=> false
+Railsは、form_for(@user)を使ってフォームを構成すると、@user.new_record?がtrueのときにはPOSTを、falseのときにはPATCHを使います。
+
+仕上げに、ナビゲーションバーにあるユーザー設定へのリンクを更新します。
+表 7.1で示したedit_user_pathという名前付きルートと、 リスト 9.9で定義したcurrent_userというヘルパーメソッドを使うと、実装が簡単です。
+
+<%= link_to "Settings", edit_user_path(current_user) %>
+完全なアプリケーションコードをリスト 10.4に示します。
+
+##..............................
+リスト 10.4: レイアウトの “Settings” リンクを更新する
+#...............................
+app/views/layouts/_header.html.erb
+ <header class="navbar navbar-fixed-top navbar-inverse">
+  <div class="container">
+    <%= link_to "sample app", root_path, id: "logo" %>
+    <nav>
+      <ul class="nav navbar-nav navbar-right">
+        <li><%= link_to "Home", root_path %></li>
+        <li><%= link_to "Help", help_path %></li>
+        <% if logged_in? %>
+          <li><%= link_to "Users", '#' %></li>
+          <li class="dropdown">
+            <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+              Account <b class="caret"></b>
+            </a>
+            <ul class="dropdown-menu">
+              <li><%= link_to "Profile", current_user %></li>
+              <li><%= link_to "Settings", edit_user_path(current_user) %></li>
+              <li class="divider"></li>
+              <li>
+                <%= link_to "Log out", logout_path, method: :delete %>
+              </li>
+            </ul>
+          </li>
+        <% else %>
+          <li><%= link_to "Log in", login_path %></li>
+        <% end %>
+      </ul>
+    </nav>
+  </div>
+</header>
+#..............................
+
+演習
+先ほど触れたように、target="_blank"で新しいページを開くときには、セキュリティ上の小さな問題があります。
+それは、リンク先のサイトがHTMLドキュメントのwindowオブジェクトを扱えてしまう、という点です。
+具体的には、フィッシング (Phising) サイトのような、悪意のあるコンテンツを導入させられてしまう可能性があります。
+Gravatarのような著名なサイトではこのような事態は起こらないと思いますが、念のため、このセキュリティ上のリスクも排除しておきましょう。
+対処方法は、リンク用のaタグのrel (relationship) 属性に、"noopener"と設定するだけです。
+早速、リスト 10.2で使ったGravatarの編集ページへのリンクにこの設定をしてみましょう。
+リスト 10.5のパーシャルを使って、new.html.erbビュー (リスト 10.6) とedit.html.erbビュー (リスト 10.7) をリファクタリングしてみましょう (コードの重複を取り除いてみましょう)。
+ヒント: 3.4.3で使ったprovideメソッドを使うと、重複を取り除けます3。
+(関連するリスト 7.27の演習課題を既に解いている場合、この演習課題をうまく解けない可能性があります。
+うまく解けない場合は、既存のコードのどこに差異があるのか考えながらこの課題に取り組んでみましょう。
+例えば筆者であれば、リスト 10.5のテクニックをリスト 10.6に適用してみたり、リスト 10.7のテクニックをリスト 10.5に適用してみたりするでしょう。)
+##..............................
+リスト 10.5: newとeditフォーム用のパーシャル
+#...............................
+app/views/users/_form.html.erb
+ <%= form_for(@user) do |f| %>
+  <%= render 'shared/error_messages', object: @user %>
+
+  <%= f.label :name %>
+  <%= f.text_field :name, class: 'form-control' %>
+
+  <%= f.label :email %>
+  <%= f.email_field :email, class: 'form-control' %>
+
+  <%= f.label :password %>
+  <%= f.password_field :password, class: 'form-control' %>
+
+  <%= f.label :password_confirmation %>
+  <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+  <%= f.submit yield(:button_text), class: "btn btn-primary" %>
+<% end %>
+#..............................
+
+##..............................
+リスト 10.6: signupページのパーシャル
+#...............................
+app/views/users/new.html.erb
+ <% provide(:title, 'Sign up') %>
+<% provide(:button_text, 'Create my account') %>
+<h1>Sign up</h1>
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= render 'form' %>
+  </div>
+</div>
+#..............................
+
+##..............................
+リスト 10.7: editビューのパーシャル
+#...............................
+app/views/users/edit.html.erb
+ <% provide(:title, 'Edit user') %>
+<% provide(:button_text, 'Save changes') %>
+<h1>Update your profile</h1>
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= render 'form' %>
+    <div class="gravatar_edit">
+      <%= gravatar_for @user %>
+      <a href="http://gravatar.com/emails" target="_blank">Change</a>
+    </div>
+  </div>
+</div>
+#..............................
+
+
+#-----------------------------------------------------
+[__ 10.1.2 ] 編集の失敗
+#-----------------------------------------------------
+
+本項では、7.3のユーザー登録に失敗したときと似た方法で、編集に失敗した場合について扱っていきます。
+まずはupdateアクションの作成から進めますが、これはリスト 6.1.5にあるように、update_attributes (10.8) を使って送信されたparamsハッシュに基いてユーザーを更新します。
+無効な情報が送信された場合、更新の結果としてfalseが返され、elseに分岐して編集ページをレンダリングします。
+このパターンは以前にも出現したことを覚えているでしょうか。
+この構造はcreateアクションの最初のバージョン (リスト 7.18) と極めて似通っています。
+
+##..............................
+リスト 10.8: ユーザーのupdateアクションの初期実装
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def show
+    @user = User.find(params[:id])
+  end
+
+  def new
+    @user = User.new
+  end
+
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      log_in @user
+      flash[:success] = "Welcome to the Sample App!"
+      redirect_to @user
+    else
+      render 'new'
+    end
+  end
+
+  def edit
+    @user = User.find(params[:id])
+  end
+
+  def update
+    @user = User.find(params[:id])
+    if @user.update_attributes(user_params)
+      # 更新に成功した場合を扱う。
+    else
+      render 'edit'
+    end
+  end
+
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+end
+#..............................
+
+update_attributesへの呼び出しでuser_paramsを使っていることに注目してください。
+7.3.2でも説明したように、ここではStrong Parametersを使ってマスアサインメントの脆弱性を防止しています。
+
+Userモデルのバリデーションとエラーメッセージのパーシャルが既にあるので (リスト 10.2)、無効な情報を送信すると役立つエラーメッセージが表示されるようになっています (図 10.3)。
+
+
+#.....................
+images/figures/edit_with_invalid_information_3rd_edition
+  ==> edit_with_invalid_information_3rd_edition.png
+図 10.3: 更新フォームの送信で発生したエラーメッセージ
+#.....................
+
+演習
+編集フォームから有効でないユーザー名やメールアドレス、パスワードを使って送信した場合、編集に失敗することを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 10.1.3 ] 編集失敗時のテスト
+#-----------------------------------------------------
+
+10.1.2では編集フォームの失敗時を実装しました。
+次に、コラム 3.3で説明したテストのガイドラインに従って、エラーを検知するための統合テストを書いていきましょう。
+まずはいつものように、統合テストを生成するところから始めます。
+
+$ rails generate integration_test users_edit
+      invoke  test_unit
+      create    test/integration/users_edit_test.rb
+最初は編集失敗時の簡単なテストを追加します (リスト 10.9)。
+リスト 10.9のテストでは、まず編集ページにアクセスし、editビューが描画されるかどうかをチェックしています。
+その後、無効な情報を送信してみて、editビューが再描画されるかどうかをチェックします。
+ここで、PATCHリクエストを送るためにpatchメソッドを使っていることに注目してください。
+これはgetやpost、deleteメソッドと同じように、HTTPリクエストを送信するためのメソッドです。
+
+##..............................
+リスト 10.9: 編集の失敗に対するテストgreen
+#...............................
+test/integration/users_edit_test.rb
+ require 'test_helper'
+
+class UsersEditTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+
+  test "unsuccessful edit" do
+    get edit_user_path(@user)
+    assert_template 'users/edit'
+    patch user_path(@user), params: { user: { name:  "",
+                                              email: "foo@invalid",
+                                              password:              "foo",
+                                              password_confirmation: "bar" } }
+
+    assert_template 'users/edit'
+  end
+end
+#..............................
+
+これで、テストを実行すると greenになるはずです。
+
+##..............................
+リスト 10.10: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 10.9のテストに１行追加し、正しい数のエラーメッセージが表示されているかテストしてみてましょう。
+ヒント: 表 5.2で紹介したassert_selectを使ってalertクラスのdivタグを探しだし、「The form contains 4 errors.」というテキストを精査してみましょう。
+
+#-----------------------------------------------------
+[__ 10.1.4 ] TDDで編集を成功させる
+#-----------------------------------------------------
+
+今度は編集フォームが動作するようにしましょう。
+プロフィール画像の編集は、画像のアップロードをGravatarに任せてあるので、既に動作するようになっています。
+図 10.2の [change] リンクをクリックすれば、図 10.4のようにGravatarを編集できます。
+ではそれ以外の機能の実装にとりかかりましょう。
+
+
+#.....................
+images/figures/gravatar_cropper_new
+  ==> gravatar_cropper_new.png
+図 10.4: Gravatarの画像調整インターフェイス (写真は誰かさん)
+#.....................
+
+そろそろ、より快適にテストをするためには、アプリケーション用のコードを「実装する前に」統合テストを書いた方が便利だと気付いた読者もいるかもしれません。
+実際、そういったテストのことは「受け入れテスト (Acceptance Tests)」として呼ばれていて、ある機能の実装が完了し、受け入れ可能な状態になったかどうかを決めるテストとして知られています。
+実際に体験してもらうために、今回はテスト駆動開発を使ってユーザーの編集機能を実装してみましょう。
+
+まずは、リスト 10.9のテストを参考にして、ユーザー情報を更新する正しい振る舞いをテストで定義します (今回は有効な情報を送信するように修正します)。
+次に、flashメッセージが空でないかどうかと、プロフィールページにリダイレクトされるかどうかをチェックします。
+また、データベース内のユーザー情報が正しく変更されたかどうかも検証します。
+作成したコードをリスト 10.11に示します。
+このとき、リスト 10.11のパスワードとパスワード確認が空であることに注目してください。
+ユーザー名やメールアドレスを編集するときに毎回パスワードを入力するのは不便なので、(パスワードを変更する必要が無いときは) パスワードを入力せずに更新できると便利です。
+また、6.1.5で紹介した@user.reloadを使って、データベースから最新のユーザー情報を読み込み直して、正しく更新されたかどうかを確認している点にも注目してください。
+(こういった正しい振る舞いというのは一般に忘れがちですが、受け入れテスト (もしくは一般的なテスト駆動開発) では先にテストを書くので、効果的なユーザー体験について考えるようになります。)
+
+##..............................
+リスト 10.11: 編集の成功に対するテストred
+#...............................
+test/integration/users_edit_test.rb
+ require 'test_helper'
+
+class UsersEditTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+  .
+  .
+  .
+  test "successful edit" do
+    get edit_user_path(@user)
+    assert_template 'users/edit'
+    name  = "Foo Bar"
+    email = "foo@bar.com"
+    patch user_path(@user), params: { user: { name:  name,
+                                              email: email,
+                                              password:              "",
+                                              password_confirmation: "" } }
+    assert_not flash.empty?
+    assert_redirected_to @user
+    @user.reload
+    assert_equal name,  @user.name
+    assert_equal email, @user.email
+  end
+end
+#..............................
+
+テストにパスする必要のあるリスト 10.12のupdateアクションは、createアクションの最終的なフォームとほぼ同じです (リスト 8.25)。
+
+##..............................
+リスト 10.12: ユーザーのupdateアクション red
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def update
+    @user = User.find(params[:id])
+    if @user.update_attributes(user_params)
+      flash[:success] = "Profile updated"
+      redirect_to @user
+    else
+      render 'edit'
+    end
+  end
+  .
+  .
+  .
+end
+#..............................
+
+リスト 10.12のキャプションにも書いておきましたが、このテストはまだ redのままになっているはずです。
+というのも、パスワードの長さに対するバリデーション (リスト 6.42) があるので、パスワードやパスワード確認の欄を空にしておくとこれに引っかかってしまうからです (リスト 10.11)。
+テストが greenになるためには、パスワードのバリデーションに対して、空だったときの例外処理を加える必要があります。
+こういったときに便利なallow_nil: trueというオプションがあるので、これを validatesに追加します (リスト 10.13)。
+
+##..............................
+リスト 10.13: パスワードが空のままでも更新できるようにする green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token
+  before_save { self.email = email.downcase }
+  validates :name, presence: true, length: { maximum: 50 }
+  VALID_EMAIL_REGEX = /\A[\w+\-.]+@[a-z\d\-.]+\.[a-z]+\z/i
+  validates :email, presence: true, length: { maximum: 255 },
+                    format: { with: VALID_EMAIL_REGEX },
+                    uniqueness: { case_sensitive: false }
+  has_secure_password
+  validates :password, presence: true, length: { minimum: 6 }, allow_nil: true
+  .
+  .
+  .
+end
+#..............................
+
+リスト 10.13によって、新規ユーザー登録時に空のパスワードが有効になってしまうのかと心配になるかもしれませんが、安心してください。
+6.3.3で説明したように、has_secure_passwordでは (追加したバリデーションとは別に) オブジェクト生成時に存在性を検証するようになっているため、空のパスワード (nil) が新規ユーザー登録時に有効になることはありません。
+(空のパスワードを入力すると存在性のバリデーションとhas_secure_passwordによるバリデーションがそれぞれ実行され、2つの同じエラーメッセージが表示されるというバグがありましたが (7.3.3)、これで解決できました。)
+
+このコードを追加したことにより、ユーザー編集ページが動くようになります (図 10.5)。
+すべてのテストを走らせてみて green になったかどうか確かめてみてください。
+
+##..............................
+リスト 10.14: green
+#...............................
+$ rails test
+#..............................
+
+
+#.....................
+images/figures/edit_form_working_new
+  ==> edit_form_working_new.png
+図 10.5: 編集に成功した結果
+#.....................
+
+演習
+実際に編集が成功するかどうか、有効な情報を送信して確かめてみましょう。
+もしGravatarと紐付いていない適当なメールアドレス (foobar@example.comなど) に変更した場合、プロフィール画像はどのように表示されるでしょうか? 実際に編集フォームからメールアドレスを変更して、確認してみてましょう。
+
+#-----------------------------
+[_ 10.2 ] 認可
+#-----------------------------
+
+ウェブアプリケーションの文脈では、認証 (authentication) はサイトのユーザーを識別することであり、認可 (authorization) はそのユーザーが実行可能な操作を管理することです。
+第8章で認証システムを構築したことで、認可のためのシステムを実装する準備もできました。
+
+10.1のeditアクションとupdateアクションはすでに完全に動作していますが、セキュリティ上の大穴が1つ空いています。
+どのユーザーでもあらゆるアクションにアクセスできるため、誰でも (ログインしていないユーザーでも) ユーザー情報を編集できてしまうのです。
+この節では、ユーザーにログインを要求し、かつ自分以外のユーザー情報を変更できないように制御してみましょう (こういったセキュリティ上の制御機構をセキュリティモデルと呼びます)。
+
+10.2.1では、ログインしていないユーザーが保護されたページにアクセスしようとした際のケースについて対処していきます。
+こういったケースはアプリケーションを使っていると普通に起こることなので、ログインページに転送して、そのときに分かりやすいメッセージも表示するようにしましょう。
+モックアップを図 10.6に示します。
+一方で、許可されていないページに対してアクセスするログイン済みのユーザーがいたら (例えば他人のユーザー編集ページにアクセスしようとしたら)、ルートURLにリダイレクトさせるようにします (10.2.2)。
+
+
+#.....................
+images/figures/login_page_protected_mockup
+  ==> login_page_protected_mockup.png
+図 10.6: 保護されたページにアクセスしたときのページのモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 10.2.1 ] ユーザーにログインを要求する
+#-----------------------------------------------------
+
+図 10.6のように転送させる仕組みを実装したいときは、Usersコントローラの中でbeforeフィルターを使います。
+beforeフィルターは、before_actionメソッドを使って何らかの処理が実行される直前に特定のメソッドを実行する仕組みです4。
+今回はユーザーにログインを要求するために、リスト 10.15のようにlogged_in_userメソッドを定義してbefore_action :logged_in_userという形式で使います。
+
+##..............................
+リスト 10.15: beforeフィルターにlogged_in_userを追加する red
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:edit, :update]
+  .
+  .
+  .
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+
+    # beforeアクション
+
+    # ログイン済みユーザーかどうか確認
+    def logged_in_user
+      unless logged_in?
+        flash[:danger] = "Please log in."
+        redirect_to login_url
+      end
+    end
+end
+#..............................
+
+デフォルトでは、beforeフィルターはコントローラ内のすべてのアクションに適用されるので、ここでは適切な:onlyオプション (ハッシュ) を渡すことで、:editと:updateアクションだけにこのフィルタが適用されるように制限をかけています。
+
+beforeフィルターを使って実装した結果 (リスト 10.15) は、一度ログアウトしてユーザー編集ページ (/users/1/edit) にアクセスしてみることで確認できます (図 10.7)。
+
+
+#.....................
+images/figures/protected_log_in_3rd_edition
+  ==> protected_log_in_3rd_edition.png
+図 10.7: 保護されたページにアクセスした直後のログインフォーム
+#.....................
+
+リスト 10.15のキャプションに記したように、今の段階ではテストは redになります。
+
+##..............................
+リスト 10.16: red
+#...............................
+$ rails test
+#..............................
+
+原因は、editアクションやupdateアクションでログインを要求するようになったため、ログインしていないユーザーだとこれらのテストが失敗するようになったためです。
+
+このため、editアクションやupdateアクションをテストする前にログインしておく必要があります。
+解決策は簡単で、 9.3で開発したlog_in_asヘルパー (リスト 9.24) を使うことです。
+修正した結果をリスト 10.17に示します。
+
+##..............................
+リスト 10.17: テストユーザーでログインする green
+#...............................
+test/integration/users_edit_test.rb
+ require 'test_helper'
+
+class UsersEditTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+
+  test "unsuccessful edit" do
+    log_in_as(@user)
+    get edit_user_path(@user)
+    .
+    .
+    .
+  end
+
+  test "successful edit" do
+    log_in_as(@user)
+    get edit_user_path(@user)
+    .
+    .
+    .
+  end
+end
+#..............................
+
+(リスト 10.17のsetupメソッド内でログイン処理をまとめてしまうことも可能です。
+しかし、10.2.3で片方のテストをログインする前に編集ページにアクセスするように変更したいので、ここでまとめてしまっても結局は元に戻すことになってしまいます。)
+
+今度はテストスイートがパスするはずです。
+
+##..............................
+リスト 10.18: green
+#...............................
+$ rails test
+#..............................
+
+これでテストスイートがパスするようになりましたが、実はbeforeフィルターの実装はまだ終わっておりません。
+セキュリティモデルに関する実装を取り外してもテストが greenになってしまうかどうか、実際にコメントアウトして確かめてみましょう (リスト 10.19)。
+なんと悪いことに、すべてのテストが成功してしまいました。
+beforeフィルターをコメントアウトして巨大なセキュリティーホールが作られたら、テストスイートでそれを検出できるべきです。
+つまり、リスト 10.19のコードは redにならなければいけないのです。
+テストを書いて、この問題に対処しましょう。
+
+##..............................
+リスト 10.19: セキュリティモデルを確認するためにbeforeフィルターをコメントアウトするgreen
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  # before_action :logged_in_user, only: [:edit, :update]
+  .
+  .
+  .
+end
+#..............................
+
+beforeフィルターは基本的にアクションごとに適用していくので、Usersコントローラのテストもアクションごとに書いていきます。
+具体的には、正しい種類のHTTPリクエストを使ってeditアクションとupdateアクションをそれぞれ実行させてみて、flashにメッセージが代入されたかどうか、ログイン画面にリダイレクトされたかどうかを確認してみましょう。
+表 7.1から、適切なリクエストはそれぞれGETとPATCHであることがわかります。
+したがって、テスト内ではgetメソッドとpatchメソッドを使います。
+変更の結果をリスト 10.20に示します。
+
+##..............................
+リスト 10.20: editとupdateアクションの保護に対するテストする red
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+  .
+  .
+  .
+  test "should redirect edit when not logged in" do
+    get edit_user_path(@user)
+    assert_not flash.empty?
+    assert_redirected_to login_url
+  end
+
+  test "should redirect update when not logged in" do
+    patch user_path(@user), params: { user: { name: @user.name,
+                                              email: @user.email } }
+    assert_not flash.empty?
+    assert_redirected_to login_url
+  end
+end
+#..............................
+
+リスト 10.20の２つ目のテストでは、patchメソッドを使ってuser_path(@user)にPATCHリクエストを送信している点に注目してください。
+表 7.1にあるように、このリクエストはUsersコントローラのupdateアクションへと適切に繋いでくれます。
+
+これでテストスイートは redになるはずです。
+準備が整ったら、beforeフィルターのコメントアウトを元に戻して、今度は green になるかどうか確かめてみましょう (リスト 10.21)。
+
+##..............................
+リスト 10.21: beforeフィルターを再び有効化する green
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:edit, :update]
+  .
+  .
+  .
+end
+#..............................
+
+コメントアウトしていた箇所を元に戻すと、テストが green するようになるはずです。
+
+##..............................
+リスト 10.22: green
+#...............................
+$ rails test
+#..............................
+
+これらのテストを実装したことによって、うっかり誰でも編集できてしまうバグがあっても、すぐに検知できるようになりました。
+
+演習
+デフォルトのbeforeフィルターは、すべてのアクションに対して制限を加えます。
+今回のケースだと、ログインページやユーザー登録ページにも制限の範囲が及んでしまうはずです (結果としてテストも失敗するはずです)。
+リスト 10.15のonly:オプションをコメントアウトしてみて、テストスイートがそのエラーを検知できるかどうか (テストが失敗するかどうか) 確かめてみましょう。
+
+#-----------------------------------------------------
+[__ 10.2.2 ] 正しいユーザーを要求する
+#-----------------------------------------------------
+
+当然のことですが、ログインを要求するだけでは十分ではありません。
+ユーザーが自分の情報だけを編集できるようにする必要があります。
+10.2.1では、深刻なセキュリティ上の欠陥を見逃してしまうテストを見てきました。
+そこで本項では、セキュリティモデルが正しく実装されている確信を持つために、テスト駆動開発で進めていきます。
+したがって、Usersコントローラのテスト (リスト 10.20) を補完するように、テストを追加するところから始めていきます。
+
+まずはユーザーの情報が互いに編集できないことを確認するために、サンプルユーザーをもう一人追加します。
+ユーザー用のfixtureファイルに2人目のユーザーを追加してみましょう (リスト 10.23)。
+
+##..............................
+リスト 10.23: fixtureファイルに２人目のユーザーを追加する
+#...............................
+test/fixtures/users.yml
+ michael:
+  name: Michael Example
+  email: michael@example.com
+  password_digest: <%= User.digest('password') %>
+
+archer:
+  name: Sterling Archer
+  email: duchess@example.gov
+  password_digest: <%= User.digest('password') %>
+#..............................
+
+次に、 リスト 9.24で定義したlog_in_asメソッドを使って、editアクションとupdateアクションをテストします (リスト 10.24)。
+このとき、既にログイン済みのユーザーを対象としているため、ログインページではなくルートURLにリダイレクトしている点に注意してください。
+
+##..............................
+リスト 10.24: 間違ったユーザーが編集しようとしたときのテスト red
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user       = users(:michael)
+    @other_user = users(:archer)
+  end
+  .
+  .
+  .
+  test "should redirect edit when logged in as wrong user" do
+    log_in_as(@other_user)
+    get edit_user_path(@user)
+    assert flash.empty?
+    assert_redirected_to root_url
+  end
+
+  test "should redirect update when logged in as wrong user" do
+    log_in_as(@other_user)
+    patch user_path(@user), params: { user: { name: @user.name,
+                                              email: @user.email } }
+    assert flash.empty?
+    assert_redirected_to root_url
+  end
+end
+#..............................
+
+別のユーザーのプロフィールを編集しようとしたらリダイレクトさせたいので、correct_userというメソッドを作成し、beforeフィルターからこのメソッドを呼び出すようにします (リスト 10.25)。
+beforeフィルターのcorrect_userで@user変数を定義しているため、リスト 10.25ではeditとupdateの各アクションから、@userへの代入文を削除している点にも注意してください。
+
+##..............................
+リスト 10.25: beforeフィルターを使って編集/更新ページを保護する green
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:edit, :update]
+  before_action :correct_user,   only: [:edit, :update]
+  .
+  .
+  .
+  def edit
+  end
+
+  def update
+    if @user.update_attributes(user_params)
+      flash[:success] = "Profile updated"
+      redirect_to @user
+    else
+      render 'edit'
+    end
+  end
+  .
+  .
+  .
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+
+    # beforeアクション
+
+    # ログイン済みユーザーかどうか確認
+    def logged_in_user
+      unless logged_in?
+        flash[:danger] = "Please log in."
+        redirect_to login_url
+      end
+    end
+
+    # 正しいユーザーかどうか確認
+    def correct_user
+      @user = User.find(params[:id])
+      redirect_to(root_url) unless @user == current_user
+    end
+end
+#..............................
+
+今度はテストスイートが greenになるはずです。
+
+##..............................
+リスト 10.26: green
+#...............................
+$ rails test
+#..............................
+
+最後に、リファクタリングではありますが、一般的な慣習に倣ってcurrent_user?という論理値を返すメソッドを実装します。
+correct_userの中で使えるようにしたいので、Sessionsヘルパーの中にこのメソッドを追加します (リスト 10.27)。
+このメソッドを使うと今までの
+
+unless @user == current_user
+といった部分が、次のように (少し) 分かりやすいコードになります。
+
+unless current_user?(@user)
+##..............................
+リスト 10.27: current_user?メソッド
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+
+  # 渡されたユーザーをログイン
+  def log_in(user)
+    session[:user_id] = user.id
+  end
+
+  # 永続セッションとしてユーザーを記憶する
+  def remember(user)
+    user.remember
+    cookies.permanent.signed[:user_id] = user.id
+    cookies.permanent[:remember_token] = user.remember_token
+  end
+
+  # 渡されたユーザーがログイン済みユーザーであればtrueを返す
+  def current_user?(user)
+    user == current_user
+  end
+
+  # 記憶トークン (cookie) に対応するユーザーを返す
+  def current_user
+    .
+    .
+    .
+  end
+  .
+  .
+  .
+end
+#..............................
+
+先ほどのメソッドを使って比較演算していた行を置き換えると、リスト 10.28になります。
+
+##..............................
+リスト 10.28: 最終的なcorrect_userの実装 green
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:edit, :update]
+  before_action :correct_user,   only: [:edit, :update]
+  .
+  .
+  .
+  def edit
+  end
+
+  def update
+    if @user.update_attributes(user_params)
+      flash[:success] = "Profile updated"
+      redirect_to @user
+    else
+      render 'edit'
+    end
+  end
+  .
+  .
+  .
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+
+    # beforeアクション
+
+    # ログイン済みユーザーかどうか確認
+    def logged_in_user
+      unless logged_in?
+        flash[:danger] = "Please log in."
+        redirect_to login_url
+      end
+    end
+
+    # 正しいユーザーかどうか確認
+    def correct_user
+      @user = User.find(params[:id])
+      redirect_to(root_url) unless current_user?(@user)
+    end
+end
+#..............................
+
+演習
+何故editアクションとupdateアクションを両方とも保護する必要があるのでしょうか? 考えてみてください。
+上記のアクションのうち、どちらがブラウザで簡単にテストできるアクションでしょうか?
+
+#-----------------------------------------------------
+[__ 10.2.3 ] フレンドリーフォワーディング
+#-----------------------------------------------------
+
+ここまででWebサイトの認可機能は完成したかのように見えますが、後1つ小さなキズがあります。
+保護されたページにアクセスしようとすると、問答無用で自分のプロフィールページに移動させられてしまいます。
+別の言い方をすれば、ログインしていないユーザーが編集ページにアクセスしようとしていたなら、ユーザーがログインした後にはその編集ページにリダイレクトされるようにするのが望ましい動作です。
+リダイレクト先は、ユーザーが開こうとしていたページにしてあげるのが親切というものです。
+
+実際のコードは少し複雑ですが、フレンドリーフォワーディングのテストは非常にシンプルに書くことができます。
+ログインした後に編集ページへアクセスする、という順序を逆にしてあげるだけです (リスト 10.17)。
+リスト 10.29が示すように、実際のテストはまず編集ページにアクセスし、ログインした後に、(デフォルトのプロフィールページではなく) 編集ページにリダイレクトされているかどうかをチェックするといったテストです。
+(なお、リダイレクトによってedit用のテンプレートが描画されなくなったので、リスト 10.29では該当するテストを削除しています。)
+
+##..............................
+リスト 10.29: フレンドリーフォワーディングのテスト red
+#...............................
+test/integration/users_edit_test.rb
+ require 'test_helper'
+
+class UsersEditTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+  .
+  .
+  .
+  test "successful edit with friendly forwarding" do
+    get edit_user_path(@user)
+    log_in_as(@user)
+    assert_redirected_to edit_user_url(@user)
+    name  = "Foo Bar"
+    email = "foo@bar.com"
+    patch user_path(@user), params: { user: { name:  name,
+                                              email: email,
+                                              password:              "",
+                                              password_confirmation: "" } }
+    assert_not flash.empty?
+    assert_redirected_to @user
+    @user.reload
+    assert_equal name,  @user.name
+    assert_equal email, @user.email
+  end
+end
+#..............................
+
+失敗するテストが書けたので、ようやくフレンドリーフォワーディングを実装する準備ができました5。
+ユーザーを希望のページに転送するには、リクエスト時点のページをどこかに保存しておき、その場所にリダイレクトさせる必要があります。
+この動作をstore_locationとredirect_back_orの2つのメソッドを使って実現してみましょう。
+なお、これらのメソッドはSessionsヘルパーで定義しています (リスト 10.30)。
+
+##..............................
+リスト 10.30: フレンドリーフォワーディングの実装 red
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+  .
+  .
+  .
+  # 記憶したURL (もしくはデフォルト値) にリダイレクト
+  def redirect_back_or(default)
+    redirect_to(session[:forwarding_url] || default)
+    session.delete(:forwarding_url)
+  end
+
+  # アクセスしようとしたURLを覚えておく
+  def store_location
+    session[:forwarding_url] = request.original_url if request.get?
+  end
+end
+#..............................
+
+転送先のURLを保存する仕組みは、8.2.1でユーザーをログインさせたときと同じで、session変数を使います。
+リスト 10.30ではrequestオブジェクトも使っています (request.original_urlでリクエスト先が取得できます)。
+
+リスト 10.30のstore_locationメソッドでは、 リクエストが送られたURLをsession変数の:forwarding_urlキーに格納しています。
+ただし、GETリクエストが送られたときだけ格納するようにしておきます。
+これによって、例えばログインしていないユーザーがフォームを使って送信した場合、転送先のURLを保存させないようにできます。
+これは稀なケースですが起こり得ます。
+例えばユーザがセッション用のcookieを手動で削除してフォームから送信するケースなどです。
+こういったケースに対処しておかないと、POSTや PATCH、DELETEリクエストを期待しているURLに対して、(リダイレクトを通して) GETリクエストが送られてしまい、場合によってはエラーが発生します。
+このため、if request.get?という条件文を使ってこのケースに対応しています6。
+
+先ほど定義したstore_locationメソッドを使って、早速beforeフィルター (logged_in_user) を修正してみましょう (リスト 10.31)。
+
+##..............................
+リスト 10.31: ログインユーザー用beforeフィルターにstore_locationを追加する red
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:edit, :update]
+  before_action :correct_user,   only: [:edit, :update]
+  .
+  .
+  .
+  def edit
+  end
+  .
+  .
+  .
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+
+    # beforeアクション
+
+    # ログイン済みユーザーかどうか確認
+    def logged_in_user
+      unless logged_in?
+        store_location
+        flash[:danger] = "Please log in."
+        redirect_to login_url
+      end
+    end
+
+    # 正しいユーザーかどうか確認
+    def correct_user
+      @user = User.find(params[:id])
+      redirect_to(root_url) unless current_user?(@user)
+    end
+end
+#..............................
+
+フォワーディング自体を実装するには、redirect_back_orメソッドを使います。
+リクエストされたURLが存在する場合はそこにリダイレクトし、ない場合は何らかのデフォルトのURLにリダイレクトします。
+デフォルトのURLは、Sessionコントローラのcreateアクションに追加し、サインイン成功後にリダイレクトします (リスト 10.32)。
+redirect_back_orメソッドでは、次のようにor演算子||を使います。
+
+session[:forwarding_url] || default
+このコードは、値がnilでなければsession[:forwarding_url]を評価し、そうでなければデフォルトのURLを使っています。
+またリスト 10.30では、session.delete(:forwarding_url) という行を通して転送用のURLを削除している点にも注意してください。
+これをやっておかないと、次回ログインしたときに保護されたページに転送されてしまい、ブラウザを閉じるまでこれが繰り返されてしまいます (このコードのテストは10.2.3.1の演習に回します)。
+ちなみに、最初にredirect文を実行しても、セッションが削除される点を覚えておくとよいでしょう。
+実は、明示的にreturn文やメソッド内の最終行が呼び出されない限り、リダイレクトは発生しません。
+したがって、redirect文の後にあるコードでも、そのコードは実行されるのです。
+
+##..............................
+リスト 10.32: フレンドリーフォワーディングを備えたcreateアクション green
+#...............................
+app/controllers/sessions_controller.rb
+ class SessionsController < ApplicationController
+  .
+  .
+  .
+  def create
+    user = User.find_by(email: params[:session][:email].downcase)
+    if user && user.authenticate(params[:session][:password])
+      log_in user
+      params[:session][:remember_me] == '1' ? remember(user) : forget(user)
+      redirect_back_or user
+    else
+      flash.now[:danger] = 'Invalid email/password combination'
+      render 'new'
+    end
+  end
+  .
+  .
+  .
+end
+#..............................
+
+これで、リスト 10.29のフレンドリーフォワーディング用統合テストはパスするはずです。
+成功すれば、基本ユーザー認証機能とページ保護機能の実装は完了です。
+いつものようにテストを実行して、テストスイートが green になることを確認してから先に進みましょう。
+
+##..............................
+リスト 10.33: green
+#...............................
+$ rails test
+#..............................
+
+演習
+フレンドリーフォワーディングで、渡されたURLに初回のみ転送されていることを、テストを書いて確認してみましょう。
+次回以降のログインのときには、転送先のURLはデフォルト (プロフィール画面) に戻っている必要があります。
+ヒント: リスト 10.29のsession[:forwarding_url]が正しい値かどうか確認するテストを追加してみましょう。
+7.1.3で紹介したdebuggerメソッドをSessionsコントローラのnewアクションに置いてみましょう。
+その後、ログアウトして /users/1/edit にアクセスしてみてください (デバッガーが途中で処理を止めるはずです)。
+ここでコンソールに移り、session[:forwarding_url]の値が正しいかどうか確認してみましょう。
+また、newアクションにアクセスしたときのrequest.get?の値も確認してみましょう (デバッガーを使っていると、ときどき予期せぬ箇所でターミナルが止まったり、おかしい挙動を見せたりします。
+熟練の開発者になった気になって (コラム 1.1)、落ち着いて対処してみましょう)。
+
+#-----------------------------
+[_ 10.3 ] すべてのユーザーを表示する
+#-----------------------------
+
+この節では、いよいよ最後から2番目のユーザーアクションであるindexアクションを追加しましょう。
+このアクションは、すべてのユーザーを一覧表示します。
+その際、データベースにサンプルデータを追加する方法や、将来ユーザー数が膨大になってもindexページを問題なく表示できるようにするためのユーザー出力のページネーション (pagination=ページ分割) の方法を学びます。
+ユーザーの一覧、ページネーション用リンク、移動用の [Users] リンクのモックアップを図 10.8に示します7。
+また、10.4では管理者権限を新たに実装し、ユーザーの一覧ページから (管理者であれば) ユーザーを削除できる機能も実装していきます。
+
+
+#.....................
+images/figures/user_index_mockup_bootstrap
+  ==> user_index_mockup_bootstrap.png
+図 10.8: ユーザー一覧ページのモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 10.3.1 ] ユーザーの一覧ページ
+#-----------------------------------------------------
+
+ユーザーの一覧ページを実装するために、まずはセキュリティモデルについて考えてみましょう。
+ユーザーのshowページについては、今後も (ログインしているかどうかに関わらず) サイトを訪れたすべてのユーザーから見えるようにしておきますが、ユーザーのindexページはログインしたユーザーにしか見せないようにし、未登録のユーザーがデフォルトで表示できるページを制限します8。
+
+indexページを不正なアクセスから守るために、まずはindexアクションが正しくリダイレクトするか検証するテストを書いてみます (リスト 10.34)。
+
+##..............................
+リスト 10.34: indexアクションのリダイレクトをテストする red
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user       = users(:michael)
+    @other_user = users(:archer)
+  end
+
+  test "should redirect index when not logged in" do
+    get users_path
+    assert_redirected_to login_url
+  end
+  .
+  .
+  .
+end
+#..............................
+
+次に、beforeフィルターのlogged_in_userにindexアクションを追加して、このアクションを保護します (リスト 10.35)。
+
+##..............................
+リスト 10.35: indexアクションにはログインを要求する green
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:index, :edit, :update]
+  before_action :correct_user,   only: [:edit, :update]
+
+  def index
+  end
+
+  def show
+    @user = User.find(params[:id])
+  end
+  .
+  .
+  .
+end
+#..............................
+
+今度はすべてのユーザーを表示するために、全ユーザーが格納された変数を作成し、順々に表示するindexビューを実装します。
+Toyアプリケーションにも同じindexアクションがあったことを思い出してください (リスト 2.8)。
+そのときと同様に、User.allを使ってデータベース上の全ユーザーを取得し、ビューで使えるインスタンス変数@usersに代入させます (リスト 10.36)。
+(すべてのユーザーを一気に読み出すとデータ量が多い場合に問題が生じるのではないかと思われた方、そのとおりです。
+このキズは10.3.3で修正します。)
+
+##..............................
+リスト 10.36: ユーザーのindexアクション
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:index, :edit, :update]
+  .
+  .
+  .
+  def index
+    @users = User.all
+  end
+  .
+  .
+  .
+end
+#..............................
+
+実際のindexページを作成するには、ユーザーを列挙してユーザーごとにliタグで囲むビューを作成する必要があります。
+ここではeachメソッドを使って作成します。
+それぞれの行をリストタグulで囲いながら、各ユーザーのGravatarと名前を表示します (リスト 10.37)。
+
+##..............................
+リスト 10.37: ユーザーのindexビュー
+#...............................
+app/views/users/index.html.erb
+ <% provide(:title, 'All users') %>
+<h1>All users</h1>
+
+<ul class="users">
+  <% @users.each do |user| %>
+    <li>
+      <%= gravatar_for user, size: 50 %>
+      <%= link_to user.name, user %>
+    </li>
+  <% end %>
+</ul>
+#..............................
+
+リスト 10.37では、7.1.4.1の演習で使ったリスト 10.38を利用して、Gravatarヘルパーにデフォルト以外のサイズを指定するオプションを渡しています。
+この演習をまだやっていない場合は、リスト 10.38に従ってUsersヘルパーを更新してから先に進んでください。
+もちろん、Ruby 2.0 から導入されたキーワード引数を使ってみても良いでしょう (リスト 7.13)。
+
+##..............................
+リスト 10.38: gravatar_forヘルパーにオプション引数を追加する
+#...............................
+app/helpers/users_helper.rb
+ module UsersHelper
+
+  # 渡されたユーザーのGravatar画像を返す
+  def gravatar_for(user, options = { size: 80 })
+    gravatar_id = Digest::MD5::hexdigest(user.email.downcase)
+    size = options[:size]
+    gravatar_url = "https://secure.gravatar.com/avatar/#{gravatar_id}?s=#{size}"
+    image_tag(gravatar_url, alt: user.name, class: "gravatar")
+  end
+end
+#..............................
+
+Gravatar側の準備が整ったら、CSS (正確にはSCSSですが) にもちょっぴり手を加えておきましょう (リスト 10.39)。
+
+##..............................
+リスト 10.39: ユーザーのindexページ用のCSS
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* Users index */
+
+.users {
+  list-style: none;
+  margin: 0;
+  li {
+    overflow: auto;
+    padding: 10px 0;
+    border-bottom: 1px solid $gray-lighter;
+  }
+}
+#..............................
+
+最後に、サイト内移動用のヘッダーにユーザー一覧表示用のリンクを追加します。
+これにはusers_pathを使い、表 7.1に残っている最後の名前付きルートを割り当てます。
+作成したコードをリスト 10.40に示します。
+
+##..............................
+リスト 10.40: ユーザー一覧ページへのリンクを更新する
+#...............................
+app/views/layouts/_header.html.erb
+ <header class="navbar navbar-fixed-top navbar-inverse">
+  <div class="container">
+    <%= link_to "sample app", root_path, id: "logo" %>
+    <nav>
+      <ul class="nav navbar-nav navbar-right">
+        <li><%= link_to "Home", root_path %></li>
+        <li><%= link_to "Help", help_path %></li>
+        <% if logged_in? %>
+          <li><%= link_to "Users", users_path %></li>
+          <li class="dropdown">
+            <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+              Account <b class="caret"></b>
+            </a>
+            <ul class="dropdown-menu">
+              <li><%= link_to "Profile", current_user %></li>
+              <li><%= link_to "Settings", edit_user_path(current_user) %></li>
+              <li class="divider"></li>
+              <li>
+                <%= link_to "Log out", logout_path, method: :delete %>
+              </li>
+            </ul>
+          </li>
+        <% else %>
+          <li><%= link_to "Log in", login_path %></li>
+        <% end %>
+      </ul>
+    </nav>
+  </div>
+</header>
+#..............................
+
+これでユーザーのindexは完全に動くようになり、テストも全て greenになります。
+
+##..............................
+リスト 10.41: green
+#...............................
+$ rails test
+#..............................
+
+ところで、図 10.9のようにユーザーが1人のままではいささか寂しすぎます… 次はこの問題をもう少し何とかしてみましょう。
+
+
+#.....................
+images/figures/user_index_only_one_3rd_edition
+  ==> user_index_only_one_3rd_edition.png
+図 10.9: ユーザーの一覧ページにユーザーが1人しか表示されていない
+#.....................
+
+演習
+レイアウトにあるすべてのリンクに対して統合テストを書いてみましょう。
+ログイン済みユーザーとそうでないユーザーのそれぞれに対して、正しい振る舞いを考えてください。
+ヒント: log_in_asヘルパーを使ってリスト 5.32にテストを追加してみましょう。
+
+#-----------------------------------------------------
+[__ 10.3.2 ] サンプルのユーザー
+#-----------------------------------------------------
+
+この項では、一人ぼっちのユーザーに仲間を加えてあげることにします。
+indexページに複数のユーザーを表示させるためには、ブラウザからユーザー登録ページへ行って手作業で1人ずつ追加するという方法もできますが、せっかくなのでRubyを使ってユーザーを一気に作成してみましょう。
+
+まず、GemfileにFaker gemを追加します (リスト 10.42)。
+これは、実際にいそうなユーザー名を作成するgemです9。
+ちなみにfaker gemは開発環境以外では普通使いませんが、今回は例外的に本番環境でも適用させる予定 (10.5) なので、次のようにすべての環境で使えるようにしています。
+
+##..............................
+リスト 10.42: GemfileにFaker gemを追加する
+#...............................
+source 'https://rubygems.org'
+
+gem 'rails',          '5.1.4'
+gem 'bcrypt',         '3.1.11'
+gem 'faker',          '1.7.3'
+.
+.
+.
+#..............................
+
+次に、いつものようにbundle installを実行します。
+
+$ bundle install
+では、サンプルユーザーを生成するRubyスクリプト (Railsタスクとも呼びます) を追加してみましょう。
+Railsではdb/seeds.rbというファイルを標準として使います。
+作成したコードをリスト 10.43に示します。
+(リスト 10.43のコードは少し応用的です。
+詳細が完全に理解できなくても問題ありません。)
+
+##..............................
+リスト 10.43: データベース上にサンプルユーザーを生成するRailsタスク
+#...............................
+db/seeds.rb
+ User.create!(name:  "Example User",
+             email: "example@railstutorial.org",
+             password:              "foobar",
+             password_confirmation: "foobar")
+
+99.times do |n|
+  name  = Faker::Name.name
+  email = "example-#{n+1}@railstutorial.org"
+  password = "password"
+  User.create!(name:  name,
+               email: email,
+               password:              password,
+               password_confirmation: password)
+end
+#..............................
+
+リスト 10.43のコードでは、Example Userという名前とメールアドレスを持つ1人のユーザと、それらしい名前とメールアドレスを持つ99人のユーザーを作成します。
+create!は基本的にcreateメソッドと同じものですが、ユーザーが無効な場合にfalseを返すのではなく例外を発生させる (6.1.4) 点が異なります。
+こうしておくと見過ごしやすいエラーを回避できるので、デバッグが容易になります。
+
+それでは、データベースをリセットして、リスト 10.43のRailsタスクを実行 (db:seed) してみましょう10。
+
+$ rails db:migrate:reset
+$ rails db:seed
+データベース上にデータを追加するのは遅くなりがちで、システムによっては数分かかることもあり得ます。
+また、何人かの読者からの報告によると、Railsサーバーを動かしている状態だとrails db:migrate:resetコマンドがうまく動かない時もあるそうです。
+もし同じ状態に陥ったら、一度Railsサーバを止めてから実行してみてください (コラム 1.1)。
+
+db:seedでRailsタスクを実行し終わると、サンプルアプリケーションのユーザーが100人になっています。
+図 10.10が示すように、 最初のいくつかのメールアドレスについては、デフォルトのGravatar画像以外の写真を関連付けてみました。
+
+
+#.....................
+images/figures/user_index_all_3rd_edition
+  ==> user_index_all_3rd_edition.png
+図 10.10: 一覧ページに100人のサンプルユーザーが表示されている
+#.....................
+
+演習
+試しに他人の編集ページにアクセスしてみて、10.2.2で実装したようにリダイレクトされるかどうかを確かめてみましょう。
+
+#-----------------------------------------------------
+[__ 10.3.3 ] ページネーション
+#-----------------------------------------------------
+
+これで、最初のユーザーにも仲間ができました。
+しかし今度は逆に、1つのページに大量のユーザーが表示されてしまっています。
+100人でもかなり大きい数であると思いますし、今後は数千ユーザーに増える可能性もあります。
+これを解決するのがページネーション (pagination) というもので、この場合は、例えば1つのページに一度に30人だけユーザーを表示するというものです。
+
+Railsには豊富なページネーションメソッドがあります。
+今回はその中で最もシンプルかつ堅牢なwill_paginateメソッドを使ってみましょう。
+これを使うためには、Gemfileにwill_paginate gem とbootstrap-will_paginate gemを両方含め、Bootstrapのページネーションスタイルを使ってwill_paginateを構成する必要があります。
+まずは各gemをGemfileに追加してみましょう (リスト 10.44)11。
+
+##..............................
+リスト 10.44: Gemfileにwill_paginateを追加する
+#...............................
+source 'https://rubygems.org'
+
+gem 'rails',                   '5.1.4'
+gem 'bcrypt',                  '3.1.11'
+gem 'faker',                   '1.7.3'
+gem 'will_paginate',           '3.1.6'
+gem 'bootstrap-will_paginate', '1.0.0'
+.
+.
+.
+#..............................
+
+次にbundle installを実行します。
+
+$ bundle install
+実行したら、新しいgemが正しく読み込まれるように、Webサーバーを再起動してください。
+
+ページネーションが動作するには、ユーザーのページネーションを行うようにRailsに指示するコードをindexビューに追加する必要があります。
+また、indexアクションにあるUser.allを、ページネーションを理解できるオブジェクトに置き換える必要もあります。
+まずは、ビューに特殊なwill_paginateメソッドを追加しましょう (リスト 10.45)。
+同じコードがリストの上と下に2つありますが、その理由はこの後で説明します。
+
+##..............................
+リスト 10.45: indexページでpaginationを使う
+#...............................
+app/views/users/index.html.erb
+ <% provide(:title, 'All users') %>
+<h1>All users</h1>
+
+<%= will_paginate %>
+
+<ul class="users">
+  <% @users.each do |user| %>
+    <li>
+      <%= gravatar_for user, size: 50 %>
+      <%= link_to user.name, user %>
+    </li>
+  <% end %>
+</ul>
+
+<%= will_paginate %>
+#..............................
+
+このwill_paginateメソッドは少々不思議なことに、usersビューのコードの中から@usersオブジェクトを自動的に見つけ出し、それから他のページにアクセスするためのページネーションリンクを作成しています。
+ただし、リスト 10.45のビューはこのままでは動きません。
+というのも、現在の@users変数にはUser.allの結果が含まれていますが (リスト 10.36)、will_paginateではpaginateメソッドを使った結果が必要だからです。
+必要となるデータの例は次のとおりです。
+
+$ rails console
+>> User.paginate(page: 1)
+  User Load (1.5ms)  SELECT "users".* FROM "users" LIMIT 30 OFFSET 0
+   (1.7ms)  SELECT COUNT(*) FROM "users"
+=> #<ActiveRecord::Relation [#<User id: 1,...
+paginateでは、キーが:pageで値がページ番号のハッシュを引数に取ります。
+User.paginateは、:pageパラメーターに基いて、データベースからひとかたまりのデータ (デフォルトでは30) を取り出します。
+したがって、1ページ目は1から30のユーザー、2ページ目は31から60のユーザーといった具合にデータが取り出されます。
+ちなみにpageがnilの場合、 paginateは単に最初のページを返します。
+
+paginateを使うことで、サンプルアプリケーションのユーザーのページネーションを行えるようになります。
+具体的には、indexアクション内のallをpaginateメソッドに置き換えます (リスト 10.46)。
+ここで:pageパラメーターにはparams[:page]が使われていますが、これはwill_paginateによって自動的に生成されます。
+
+##..............................
+リスト 10.46: indexアクションでUsersをページネートする
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:index, :edit, :update]
+  .
+  .
+  .
+  def index
+    @users = User.paginate(page: params[:page])
+  end
+  .
+  .
+  .
+end
+#..............................
+
+以上で、ユーザー一覧ページは図 10.11のように動作するはずです (システム環境によっては、ここでRailsを再起動する必要があるかもしれません)。
+will_paginateをユーザーリストの上と下の両方に配置してあるので、ページネーションのリンクもページの上と下の両方に表示されています。
+
+
+#.....................
+images/figures/user_index_pagination_3rd_edition
+  ==> user_index_pagination_3rd_edition.png
+図 10.11: ページネーションされたユーザー一覧ページ
+#.....................
+
+うまくいくと、上の [2] または [Next] のリンクをクリックして、図 10.12のように次ページに移動することができるようになります。
+
+
+#.....................
+images/figures/user_index_page_two_3rd_edition
+  ==> user_index_page_two_3rd_edition.png
+図 10.12: indexページ (2ページ目)
+#.....................
+
+演習
+Railsコンソールを開き、pageオプションにnilをセットして実行すると、１ページ目のユーザーが取得できることを確認してみましょう。
+先ほどの演習課題で取得したpaginationオブジェクトは、何クラスでしょうか? また、User.allのクラスとどこが違うでしょうか? 比較してみてください。
+
+#-----------------------------------------------------
+[__ 10.3.4 ] ユーザー一覧のテスト
+#-----------------------------------------------------
+
+これでユーザーの一覧ページが動くようになったので、10.3.3のページネーションに対する簡単なテストも書いておきましょう。
+今回のテストでは、ログイン、indexページにアクセス、最初のページにユーザーがいることを確認、ページネーションのリンクがあることを確認、といった順でテストしていきます。
+最後の2つのステップでは、テスト用のデータベースに31人以上のユーザーがいる必要があります。
+
+リスト 10.23で2人目のユーザーをfixtureに追加しましたが、今回はもっと多くのユーザーを作成する必要があります。
+手動で追加するのは面倒そうですね。
+幸運には、ユーザー用fixtureファイルのpassword_digest属性で使ったように、fixtureでは埋め込みRubyをサポートしています。
+これを利用してさらに30人のユーザーを追加してみましょう (リスト 10.47)。
+なお、今後必要になるので、リスト 10.47では2人の名前付きユーザーも一緒に追加しています。
+
+##..............................
+リスト 10.47: fixtureにさらに30人のユーザーを追加する
+#...............................
+test/fixtures/users.yml
+ michael:
+  name: Michael Example
+  email: michael@example.com
+  password_digest: <%= User.digest('password') %>
+
+archer:
+  name: Sterling Archer
+  email: duchess@example.gov
+  password_digest: <%= User.digest('password') %>
+
+lana:
+  name: Lana Kane
+  email: hands@example.gov
+  password_digest: <%= User.digest('password') %>
+
+malory:
+  name: Malory Archer
+  email: boss@example.gov
+  password_digest: <%= User.digest('password') %>
+
+<% 30.times do |n| %>
+user_<%= n %>:
+  name:  <%= "User #{n}" %>
+  email: <%= "user-#{n}@example.com" %>
+  password_digest: <%= User.digest('password') %>
+<% end %>
+#..............................
+
+リスト 10.47のfixtureファイルができたので、indexページに対するテストを書いてみます。
+まずは、いつものように統合テストを生成します。
+
+$ rails generate integration_test users_index
+      invoke  test_unit
+      create    test/integration/users_index_test.rb
+今回のテストでは、paginationクラスを持ったdivタグをチェックして、最初のページにユーザーがいることを確認します。
+作成したコードをリスト 10.48に示します。
+
+##..............................
+リスト 10.48: ページネーションを含めたUsersIndexのテストgreen
+#...............................
+test/integration/users_index_test.rb
+ require 'test_helper'
+
+class UsersIndexTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+
+  test "index including pagination" do
+    log_in_as(@user)
+    get users_path
+    assert_template 'users/index'
+    assert_select 'div.pagination'
+    User.paginate(page: 1).each do |user|
+      assert_select 'a[href=?]', user_path(user), text: user.name
+    end
+  end
+end
+#..............................
+
+このテストは green になるはずです。
+
+##..............................
+リスト 10.49: green
+#...............................
+$ rails test
+#..............................
+
+演習
+試しにリスト 10.45にあるページネーションのリンク (will_paginateの部分) を２つともコメントアウトしてみて、リスト 10.48のテストが redに変わるかどうか確かめてみましょう。
+先ほどは２つともコメントアウトしましたが、１つだけコメントアウトした場合、テストが greenのままであることを確認してみましょう。
+will_paginateのリンクが２つとも存在していることをテストしたい場合は、どのようなテストを追加すれば良いでしょうか? ヒント: 表 5.2を参考にして、数をカウントするテストを追加してみましょう。
+
+#-----------------------------------------------------
+[__ 10.3.5 ] パーシャルのリファクタリング
+#-----------------------------------------------------
+
+ユーザー一覧ページにページネーションを実装することができましたが、私はここで1つの改良を加えてみたいのです。
+実はRailsにはコンパクトなビューを作成するための素晴らしいツールがいくつもあります。
+この節ではそれらのツールを使って一覧ページのリファクタリング (動作を変えずにコードを整理すること) を行うことにします。
+サンプルアプリケーションのテストは既に完了しているので、Webサイトの機能を損なうことなく安心してリファクタリングに取りかかれます。
+
+リファクタリングの第一歩は、リスト 10.50のユーザーのliをrender呼び出しに置き換えることです (リスト 10.50)。
+
+##..............................
+リスト 10.50: indexビューに対する最初のリファクタリング
+#...............................
+app/views/users/index.html.erb
+ <% provide(:title, 'All users') %>
+<h1>All users</h1>
+
+<%= will_paginate %>
+
+<ul class="users">
+  <% @users.each do |user| %>
+    <%= render user %>
+  <% end %>
+</ul>
+
+<%= will_paginate %>
+#..............................
+
+ここでは、renderをパーシャル (ファイル名の文字列) に対してではなく、Userクラスのuser変数に対して実行している点に注目してください12。
+この場合、Railsは自動的に_user.html.erbという名前のパーシャルを探しにいくので、このパーシャルを作成する必要があります (リスト 10.51)。
+
+##..............................
+リスト 10.51: 各ユーザーを表示するパーシャル
+#...............................
+app/views/users/_user.html.erb
+ <li>
+  <%= gravatar_for user, size: 50 %>
+  <%= link_to user.name, user %>
+</li>
+#..............................
+
+これは間違いなく大きな進歩です。
+しかしここで終わらせず、さらに改良してみましょう。
+今度はrenderを@users変数に対して直接実行します (リスト 10.52)。
+
+##..............................
+リスト 10.52: indexページの完全なリファクタリング green
+#...............................
+app/views/users/index.html.erb
+ <% provide(:title, 'All users') %>
+<h1>All users</h1>
+
+<%= will_paginate %>
+
+<ul class="users">
+  <%= render @users %>
+</ul>
+
+<%= will_paginate %>
+#..............................
+
+Railsは@users をUserオブジェクトのリストであると推測します。
+さらに、ユーザーのコレクションを与えて呼び出すと、Railsは自動的にユーザーのコレクションを列挙し、それぞれのユーザーを_user.html.erbパーシャルで出力します。
+これにより、リスト 10.52のコードは極めてコンパクトになります。
+
+これに限らず、リファクタリングを行う場合には、アプリケーションのコードを変更する前と後で必ずテストを実行し、いずれも green になることを確認するようにしてください。
+
+##..............................
+リスト 10.53: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 10.52にあるrenderの行をコメントアウトし、テストの結果が redに変わることを確認してみましょう。
+
+#-----------------------------
+[_ 10.4 ] ユーザーを削除する
+#-----------------------------
+
+ユーザーの一覧ページはついに完了しました。
+残るはdestroyだけです。
+これを実装することで、RESTに準拠した正統なアプリケーションとなります。
+この節では、ユーザーを削除するためのリンクを追加します。
+モックアップを図 10.13に示します。
+また、削除を行うのに必要なdestroyアクションも実装します。
+しかしその前に、削除を実行できる権限を持つ管理 (admin) ユーザーのクラスを作成しましょう。
+
+
+#.....................
+images/figures/user_index_delete_links_mockup_bootstrap
+  ==> user_index_delete_links_mockup_bootstrap.png
+図 10.13: 削除リンクを追加したユーザー一覧のモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 10.4.1 ] 管理ユーザー
+#-----------------------------------------------------
+
+特権を持つ管理ユーザーを識別するために、論理値をとるadmin属性をUserモデルに追加します。
+この後で説明しますが、こうすると自動的にadmin?メソッド (論理値を返す) も使えるようになりますので、これを使って管理ユーザーの状態をテストできます。
+変更後のデータモデルは図 10.14のようになります。
+
+user_model_admin_3rd_edition
+図 10.14: 論理値をとるadmin属性が追加されたUserモデル
+#.....................
+
+ここでいつものように、マイグレーションを実行してadmin属性を追加しましょう。
+ターミナル上で、この属性の型をbooleanと指定します。
+
+$ rails generate migration add_admin_to_users admin:boolean
+マイグレーションを実行するとadminカラムがusersテーブル (リスト 10.54) に追加されます。
+リスト 10.54では、default: falseという引数をadd_columnに追加しています。
+これは、デフォルトでは管理者になれないということを示すためです (default: false引数を与えない場合、 adminの値はデフォルトでnilになりますが、これはfalseと同じ意味ですので、必ずしもこの引数を与える必要はありません。
+ただし、このように明示的に引数を与えておけば、コードの意図をRailsと開発者に明確に示すことができます)。
+
+##..............................
+リスト 10.54: boolean型のadmin属性をUserに追加するマイグレーション
+#...............................
+db/migrate/[timestamp]_add_admin_to_users.rb
+ class AddAdminToUsers < ActiveRecord::Migration[5.0]
+  def change
+    add_column :users, :admin, :boolean, default: false
+  end
+end
+#..............................
+
+後はいつものようにマイグレーションを実行します。
+
+$ rails db:migrate
+Railsコンソールで動作を確認すると、期待どおりadmin属性が追加されて論理値をとり、さらに疑問符の付いたadmin?メソッドも利用できるようになっています。
+
+$ rails console --sandbox
+>> user = User.first
+>> user.admin?
+=> false
+>> user.toggle!(:admin)
+=> true
+>> user.admin?
+=> true
+ここではtoggle!メソッドを使って admin属性の状態をfalseからtrueに反転しています。
+
+仕上げに、最初のユーザーだけをデフォルトで管理者にするようサンプルデータを更新しましょう (リスト 10.55)。
+
+##..............................
+リスト 10.55: サンプルデータ生成タスクに管理者を1人追加する
+#...............................
+db/seeds.rb
+ User.create!(name:  "Example User",
+             email: "example@railstutorial.org",
+             password:              "foobar",
+             password_confirmation: "foobar",
+             admin: true)
+
+99.times do |n|
+  name  = Faker::Name.name
+  email = "example-#{n+1}@railstutorial.org"
+  password = "password"
+  User.create!(name:  name,
+               email: email,
+               password:              password,
+               password_confirmation: password)
+end
+#..............................
+
+次に、データベースをリセットして、サンプルデータを再度生成します。
+
+$ rails db:migrate:reset
+$ rails db:seed
+Strong Parameters、再び
+リスト 10.55では、初期化ハッシュにadmin: trueを設定することでユーザーを管理者にしていることにお気付きになりましたでしょうか。
+ここでは、荒れ狂うWeb世界にオブジェクトをさらすことの危険性を改めて強調しています。
+もし、任意のWebリクエストの初期化ハッシュをオブジェクトに渡せるとなると、攻撃者は次のようなPATCHリクエストを送信してくるかもしれません13。
+
+patch /users/17?admin=1
+このリクエストは、17番目のユーザーを管理者に変えてしまいます。
+ユーザーのこの行為は、少なくとも重大なセキュリティ違反となる可能性がありますし、実際にはそれだけでは済まないでしょう。
+
+このような危険があるからこそ、編集してもよい安全な属性だけを更新することが重要になります。
+7.3.2で説明したとおり、Strong Parametersを使って対策します。
+具体的には、 次のようにparamsハッシュに対してrequireとpermitを呼び出します。
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+上のコードでは、許可された属性リストにadminが含まれていないことに注目してください。
+これにより、任意のユーザーが自分自身にアプリケーションの管理者権限を与えることを防止できます。
+この問題は重大であるため、編集可能になってはならない属性に対するテストを作成することをぜひともオススメします。
+なお、admin属性のテストについては演習に回すことにします (10.4.1.2)。
+
+演習
+Web経由でadmin属性を変更できないことを確認してみましょう。
+具体的には、リスト 10.56に示したように、PATCHを直接ユーザーのURL (/users/:id) に送信するテストを作成してみてください。
+テストが正しい振る舞いをしているかどうか確信を得るために、まずはadminをuser_paramsメソッド内の許可されたパラメータ一覧に追加するところから始めてみましょう。
+最初のテストの結果は redになるはずです。
+##..............................
+リスト 10.56: admin属性の変更が禁止されていることをテストする
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user       = users(:michael)
+    @other_user = users(:archer)
+  end
+  .
+  .
+  .
+  test "should redirect update when not logged in" do
+    patch user_path(@user), params: { user: { name: @user.name,
+                                              email: @user.email } }
+    assert_not flash.empty?
+    assert_redirected_to login_url
+  end
+
+  test "should not allow the admin attribute to be edited via the web" do
+    log_in_as(@other_user)
+    assert_not @other_user.admin?
+    patch user_path(@other_user), params: {
+                                    user: { password:              FILL_IN,
+                                            password_confirmation: FILL_IN,
+                                            admin: FILL_IN } }
+    assert_not @other_user.FILL_IN.admin?
+  end
+  .
+  .
+  .
+end
+#..............................
+
+
+#-----------------------------------------------------
+[__ 10.4.2 ] destroyアクション
+#-----------------------------------------------------
+
+Usersリソースの最後の仕上げとして、destroyアクションへのリンクを追加しましょう。
+まず、ユーザーindexページの各ユーザーに削除用のリンクを追加し、続いて管理ユーザーへのアクセスを制限します。
+これによって、現在のユーザーが管理者のときに限り [delete] リンクが表示されるようになります (リスト 10.57)。
+
+##..............................
+リスト 10.57: ユーザー削除用リンクの実装 (管理者にのみ表示される)
+#...............................
+app/views/users/_user.html.erb
+ <li>
+  <%= gravatar_for user, size: 50 %>
+  <%= link_to user.name, user %>
+  <% if current_user.admin? && !current_user?(user) %>
+    | <%= link_to "delete", user, method: :delete,
+                                  data: { confirm: "You sure?" } %>
+  <% end %>
+</li>
+#..............................
+
+必要なDELETEリクエストを発行するリンクの生成は、method: :deleteによって行われている点に注意してください。
+また、各リンクをif文で囲い、管理者にだけ削除リンクが表示されるようにしています。
+うまく動くと、管理者から見えるページは図 10.15のようになります。
+
+ブラウザはネイティブではDELETEリクエストを送信できないため、RailsではJavaScriptを使って偽造します。
+つまり、JavaScriptがオフになっているとユーザー削除のリンクも無効になるということです。
+JavaScriptをサポートしないブラウザをサポートする必要がある場合は、フォームとPOSTリクエストを使ってDELETEリクエストを偽造することもできます。
+こちらはJavaScriptがなくても動作します14。
+
+
+#.....................
+images/figures/index_delete_links_3rd_edition
+  ==> index_delete_links_3rd_edition.png
+図 10.15: indexページに削除用リンクが表示される
+#.....................
+
+この削除リンクが動作するためには、destroyアクション (表 7.1) を追加する必要があります。
+このアクションでは、該当するユーザーを見つけてActive Recordのdestroyメソッドを使って削除し、最後にユーザーindexに移動します (リスト 10.58)。
+ユーザーを削除するためにはログインしていなくてはならないので、リスト 10.58では:destroyアクションもlogged_in_userフィルターに追加しています。
+
+##..............................
+リスト 10.58: 実際に動作するdestroyアクションを追加する
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:index, :edit, :update, :destroy]
+  before_action :correct_user,   only: [:edit, :update]
+  .
+  .
+  .
+  def destroy
+    User.find(params[:id]).destroy
+    flash[:success] = "User deleted"
+    redirect_to users_url
+  end
+
+  private
+  .
+  .
+  .
+end
+#..............................
+
+destroyアクションでは、findメソッドとdestroyメソッドを1行で書くために2つのメソッドを連結 (chain) している点に注目してください。
+
+User.find(params[:id]).destroy
+結果として、管理者だけがユーザーを削除できるようになります (より具体的には、削除リンクが見えているユーザーのみ削除できる)。
+しかし、実はまだ大きなセキュリティホールがあります。
+ある程度の腕前を持つ攻撃者なら、コマンドラインでDELETEリクエストを直接発行するという方法でサイトの全ユーザーを削除してしまうことができるでしょう。
+サイトを正しく防衛するには、destroyアクションにもアクセス制御を行う必要があります。
+これを実装してようやく、管理者だけがユーザーを削除できるようにします。
+
+10.2.1と10.2.2と同じように、今回はbeforeフィルターを使ってdestroyアクションへのアクセスを制御します。
+実装するadmin_userフィルターをリスト 10.59に示します。
+
+##..............................
+リスト 10.59: beforeフィルターでdestroyアクションを管理者だけに限定する
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:index, :edit, :update, :destroy]
+  before_action :correct_user,   only: [:edit, :update]
+  before_action :admin_user,     only: :destroy
+  .
+  .
+  .
+  private
+    .
+    .
+    .
+    # 管理者かどうか確認
+    def admin_user
+      redirect_to(root_url) unless current_user.admin?
+    end
+end
+#..............................
+
+演習
+管理者ユーザーとしてログインし、試しにサンプルユーザを２〜３人削除してみましょう。
+ユーザーを削除すると、Railsサーバーのログにはどのような情報が表示されるでしょうか?
+
+#-----------------------------------------------------
+[__ 10.4.3 ] ユーザー削除のテスト
+#-----------------------------------------------------
+
+ユーザーを削除するといった重要な操作については、期待された通りに動作するか確かめるテストを書くべきです。
+そこで、まずはユーザー用fixtureファイルを修正し、今いるサンプルユーザーの一人を管理者にしてみましょう (リスト 10.60)。
+
+##..............................
+リスト 10.60: fixture内の最初のユーザーを管理者にする
+#...............................
+test/fixtures/users.yml
+ michael:
+  name: Michael Example
+  email: michael@example.com
+  password_digest: <%= User.digest('password') %>
+  admin: true
+
+archer:
+  name: Sterling Archer
+  email: duchess@example.gov
+  password_digest: <%= User.digest('password') %>
+
+lana:
+  name: Lana Kane
+  email: hands@example.gov
+  password_digest: <%= User.digest('password') %>
+
+malory:
+  name: Malory Archer
+  email: boss@example.gov
+  password_digest: <%= User.digest('password') %>
+
+<% 30.times do |n| %>
+user_<%= n %>:
+  name:  <%= "User #{n}" %>
+  email: <%= "user-#{n}@example.com" %>
+  password_digest: <%= User.digest('password') %>
+<% end %>
+#..............................
+
+10.2.1で経験してきたように、Usersコントローラをテストするために、アクション単位でアクセス制御をテストします。
+リスト 8.31のログアウトのテストと同様に、削除をテストするために、DELETEリクエストを発行してdestroyアクションを直接動作させます。
+このとき2つのケースをチェックします。
+1つは、ログインしていないユーザーであれば、ログイン画面にリダイレクトされることです。
+もう1つは、ログイン済みではあっても管理者でなければ、ホーム画面にリダイレクトされることです。
+作成したコードをリスト 10.61に示します。
+
+##..............................
+リスト 10.61: 管理者権限の制御をアクションレベルでテストする green
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user       = users(:michael)
+    @other_user = users(:archer)
+  end
+  .
+  .
+  .
+  test "should redirect destroy when not logged in" do
+    assert_no_difference 'User.count' do
+      delete user_path(@user)
+    end
+    assert_redirected_to login_url
+  end
+
+  test "should redirect destroy when logged in as a non-admin" do
+    log_in_as(@other_user)
+    assert_no_difference 'User.count' do
+      delete user_path(@user)
+    end
+    assert_redirected_to root_url
+  end
+end
+#..............................
+
+このとき、リスト 10.61ではassert_no_differenceメソッド (リスト 7.23) を使って、ユーザー数が変化しないことを確認している点に注目してください。
+
+リスト 10.61のテストでは、管理者ではないユーザーの振る舞いについて検証していますが、管理者ユーザーの振る舞いと一緒に確認できるとよさそうです。
+そこで、管理者であればユーザー一覧画面に削除リンクが表示される仕様を利用して、リスト 10.48のテストに今回のテストを追加していくことにします。
+これにより、後ほど追加する管理者の振る舞いについても簡単にテストが書けそうです。
+さて、今回のテストで唯一の手の込んだ箇所は、管理者が削除リンクをクリックしたときに、ユーザーが削除されたことを確認する部分です。
+今回は次のようなテストでこれを実現しました。
+
+assert_difference 'User.count', -1 do
+  delete user_path(@other_user)
+end
+リスト 7.33ではassert_differenceメソッドを使ってユーザーが作成されたことを確認しましたが、今回は同じメソッドを使ってユーザーが削除されたことを確認しています。
+具体的には、DELETEリクエストを適切なURLに向けて発行し、User.countを使ってユーザー数が 
+1
+ 減ったかどうかを確認しています。
+
+したがって、管理者や一般ユーザーのテスト、そしてページネーションや削除リンクのテストをすべてまとめると、リスト 10.62のようになります。
+
+##..............................
+リスト 10.62: 削除リンクとユーザー削除に対する統合テスト green
+#...............................
+test/integration/users_index_test.rb
+ require 'test_helper'
+
+class UsersIndexTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @admin     = users(:michael)
+    @non_admin = users(:archer)
+  end
+
+  test "index as admin including pagination and delete links" do
+    log_in_as(@admin)
+    get users_path
+    assert_template 'users/index'
+    assert_select 'div.pagination'
+    first_page_of_users = User.paginate(page: 1)
+    first_page_of_users.each do |user|
+      assert_select 'a[href=?]', user_path(user), text: user.name
+      unless user == @admin
+        assert_select 'a[href=?]', user_path(user), text: 'delete'
+      end
+    end
+    assert_difference 'User.count', -1 do
+      delete user_path(@non_admin)
+    end
+  end
+
+  test "index as non-admin" do
+    log_in_as(@non_admin)
+    get users_path
+    assert_select 'a', text: 'delete', count: 0
+  end
+end
+#..............................
+
+リスト 10.62では各ユーザーの削除リンクをテストするときに、ユーザーが管理者であればスキップしている点にも注目してください (これはリスト 10.57により、管理者であれば削除リンクが表示されないからです)。
+
+これで、削除に関するコードに対して、よくテストできている状態になりました。
+テストスイートを走らせると green になるはずです。
+
+##..............................
+リスト 10.63: green
+#...............................
+$ rails test
+#..............................
+
+演習
+試しにリスト 10.59にある管理者ユーザーのbeforeフィルターをコメントアウトしてみて、テストの結果が redに変わることを確認してみましょう。
+
+#-----------------------------
+[_ 10.5 ] 最後に
+#-----------------------------
+
+5.4でUsersコントローラをご紹介して以来、長い道のりをたどってきました。
+あの頃はユーザー登録すらありませんでしたが、今は登録もログインもログアウトもできます。
+プロフィールの表示も、設定の編集も、すべてのユーザーの一覧画面もあります。
+さらに、一部のユーザーは他のユーザーを削除することすらできるようになりました。
+
+この時点で、サンプルアプリケーションはWebサイトとしての十分な基盤 (ユーザーを認証したり認可したり) が整ったといえるでしょう。
+続く第11章と第12章では、さらに2つの改善を加えます。
+１つはメールアドレスを使ってアカウントを有効化する機能 (すなわち本当に有効なメールアドレスか検証する機能) で、もう１つはユーザーがパスワードを忘れてしまったときのためのパスワードを再設定する機能です。
+
+次の章に進む前に、すべての変更をmasterブランチにマージしておきましょう。
+
+$ git add -A
+$ git commit -m "Finish user edit, update, index, and destroy actions"
+$ git checkout master
+$ git merge updating-users
+$ git push
+アプリケーションを本番展開したり、サンプルデータを本番データとして作成することもできます (本番データベースをリセットするにはpg:resetタスクを使います)。
+
+$ rails test
+$ git push heroku
+$ heroku pg:reset DATABASE
+$ heroku run rails db:migrate
+$ heroku run rails db:seed
+$ heroku restart
+もちろん、実際のWebサイトではサンプルデータを生成したくないという人もいるかと思いますが、これには理由があります (図 10.16)。
+それは、図 10.16が示すように、サンプルユーザーの表示順序が変化してしまい、図 10.11にあるようなローカル環境での表示順序と異なってしまうことです。
+これは現時点ではまだデフォルトの表示順序が指定されていないことが原因です。
+結果として、データベースの内容に応じて表示順序が異なってしまいます。
+それだけのことかと思われるかもしれませんが、これは今後マイクロポストを実装するときに問題となります。
+なお、この問題については13.1.4で解決していきます。
+
+
+#.....................
+images/figures/heroku_sample_users
+  ==> heroku_sample_users.png
+図 10.16: 本番環境のユーザー一覧ページ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 10.5.1 ] 本章のまとめ
+#-----------------------------------------------------
+
+ユーザーは、編集フォームからPATCHリクエストをupdateアクションに対して送信し、情報を更新する
+Strong Parametersを使うことで、安全にWeb上から更新させることができる
+beforeフィルターを使うと、特定のアクションが実行される直前にメソッドを呼び出すことができる
+beforeフィルターを使って、認可 (アクセス制御) を実現した
+認可に対するテストでは、特定のHTTPリクエストを直接送信する低級なテストと、ブラウザの操作をシミュレーションする高級なテスト (統合テスト) の2つを利用した
+フレンドリーフォワーディングとは、ログイン成功時に元々行きたかったページに転送させる機能である
+ユーザー一覧ページでは、すべてのユーザーをページ毎に分割して表示する
+rails db:seedコマンドは、db/seeds.rbにあるサンプルデータをデータベースに流し込む
+render @usersを実行すると、自動的に_user.html.erbパーシャルを参照し、各ユーザーをコレクションとして表示する
+boolean型のadmin属性をUserモデルに追加すると、admin?という論理オブジェクトを返すメソッドが自動的に追加される
+管理者が削除リンクをクリックすると、DELETEリクエストがdestroyアクションに向けて送信され、該当するユーザーが削除される
+fixtureファイル内で埋め込みRubyを使うと、多量のテストユーザーを作成することができる
+
+
+
+NOTE: 1 
+画像の引用元: http://www.flickr.com/photos/sashawolff/4598355045/ (2014-08-25)。
+Copyright © 2010 by Sasha Wolff (改変不可の Creative Commons Attribution 2.0 Generic ライセンス) ↑
+
+NOTE: 2 
+この動作の詳細を気にする必要はありません (悪いことをしているわけでもありません)。
+この詳細に関心を抱くのはRailsフレームワークそのものの開発者ぐらいであり、Railsでアプリケーションを開発する人にとっては重要ではありません。
+ ↑
+
+NOTE: 3 
+Jose Carlos Montero Gómezの指摘と提案に感謝します。
+この方法だと、newとeditのパーシャルにある重複をキレイに取り除くことができます。
+ ↑
+
+NOTE: 4 
+before_actionはこれまでbefore_filterという名前でしたが、「アクションの直前で実行される」という点を強調するためにRailsコアチームによって名前が変更されました。
+ ↑
+
+NOTE: 5 
+このセクションのコードでは、thoughtbot社が提供するClearance gemを適用しています。
+ ↑
+
+NOTE: 6 
+Yoel Adlerの指摘によって、この問題と解決策が見つかりました。
+感謝いたします。
+ ↑
+
+NOTE: 7 
+画像の引用元: http://www.flickr.com/photos/glasgows/338937124/ (2014-08-25)。
+Copyright © 2008 by M&R Glasgow (改変不可の Creative Commons Attribution 2.0 Generic ライセンス ↑
+
+NOTE: 8 
+ちなみにこれはTwitterの認可モデルと同じです。
+ ↑
+
+NOTE: 9 
+これまでと同様に、Gemfileで指定した各gemのバージョンはgemfiles-4th-ed.railstutorial.orgと一致している必要があります。
+もしうまく次に進めない場合はチェックしてみてください。
+ ↑
+
+NOTE: 10 
+原理的には、rails db:resetコマンド1つでこれら2つのタスクを実行することもできますが、最新のRailsだとうまく動かないのでこのようにしています。
+ ↑
+
+NOTE: 11 
+これまでと同様に、Gemfileで指定した各gemのバージョンはgemfiles-4th-ed.railstutorial.orgと一致している必要があります。
+もしうまく次に進めない場合はチェックしてみてください。
+ ↑
+
+NOTE: 12 
+このuserという名前そのものはまったく重要ではないことに注意してください。
+例えばuserをfoobarに置き換え、@users.each do |foobar|と書いてからrender foobarと呼び出しても問題なく動作します。
+重要なのは、そのオブジェクトそのものではなく、そのオブジェクトが属しているクラス (この場合はUserクラス) の方です。
+ ↑
+
+NOTE: 13 
+curlなどのコマンドラインツールを使うと、PATCHリクエストをこの形式で送信することができます。
+ ↑
+
+NOTE: 14 
+詳しくはRailsCastの "JavaScriptを使わない削除" (英語) を観てください。
+ ↑
+«前の章    次の章»

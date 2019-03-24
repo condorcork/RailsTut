@@ -1,0 +1,1933 @@
+第5章
+
+レイアウトを作成する
+第4章の簡単なRubyツアーでは、サンプルアプリケーションにアプリケーションスタイルシートを含める方法を学びました (4.1)。
+しかし4.3.4で指摘したとおり、このスタイルシートはまだ空のままです。
+この章では、アプリケーションにBootstrapフレームワークを組み込み、そして、カスタムスタイルを追加します1。
+また、これまで作成したページ (HomeやAboutなど) へのリンクをレイアウトに追加します (5.1)。
+その途中で、パーシャル、Railsのルーティング、Asset Pipelineについて学び、さらにSassについても紹介します(5.2)。
+章の最後に、ユーザーをサイトにログインさせるための重要な一歩を踏み出します (5.4)。
+
+本章では、サンプルアプリケーションにレイアウトを追加したり、修正したりといった部分に注力していきます。
+また、レイアウトについてはテスト駆動開発で進めたり、全くテストを書かない箇所もあります (テストを書くときと書かないときのガイドラインについてはコラム 3.3で解説します)。
+このため、本章ではテキストエディタによる修正とブラウザによる確認がほとんどになります。
+テスト駆動開発で進める唯一の箇所は、5.3.1のContactページを追加する箇所のみです。
+最後に、新しいテスト手法「 統合テスト (Integration Test)」について紹介します (5.3.4)。
+統合テストを使って、最終的なレイアウトやリンクが正しいかどうかをチェックします。
+
+
+#-----------------------------
+[_ 5.1 ] 構造を追加する
+#-----------------------------
+
+RailsチュートリアルはWeb開発のための本であり、Webデザインの本ではありませんが、だからといって何のスタイルもない寒々しい外観のアプリケーションでいつまでも作業を続けていると憂鬱になってしまいます。
+そこでこの章では、レイアウトにいくつかの構造とCSSを与えて、最小限のスタイルを追加します。
+カスタムCSSルールの他に、Twitter社によるオープンソースのWebデザインフレームワークとして公開しているBootstrapも利用します。
+また、コードそのものにもスタイルを与えます。
+つまり、散らかり始めたレイアウトのコードを、パーシャル (Partial) 機能を使って整えていくということです。
+
+Webアプリケーションを作成するときに、ユーザーインターフェイスの概要をできるだけ早いうちに把握しておくことがしばしば有用です。
+そこで本書では、モックアップ (Webの文脈ではよくワイヤーフレームと呼ばれます) という、実装後のアプリケーションの外観をスケッチして使っていきます2。
+また本章では、主に3.2で紹介したサイトロゴ、ナビゲーションヘッダー、サイトフッターを含む静的ページを開発します。
+これらのページの中で最も重要な、Homeページのモックアップを図 5.1に示します。
+モックアップに基いて作成した最終結果は図 5.9で確認することができます。
+両者を見比べると、細部が若干異なることに気が付くでしょう (例えば、実際には最後にRailsのロゴをページに追加します)。
+しかしモックアップは正確である必要はありませんので、これで十分です。
+
+
+#.....................
+images/figures/home_page_mockup_3rd_edition
+  ==> home_page_mockup_3rd_edition.png
+図 5.1: サンプルアプリケーションのHomeページのモックアップ
+#.....................
+
+Gitでバージョン管理をしているのであれば、これまでと同様、この時点で新しいブランチを作成するのがよいでしょう。
+
+$ git checkout -b filling-in-layout
+
+#-----------------------------------------------------
+[__ 5.1.1 ] ナビゲーション
+#-----------------------------------------------------
+
+第一段階として、サンプルアプリケーションにリンクとスタイルを追加するために、サイトのレイアウトファイルapplication.html.erb (リスト 4.3) にHTML構造を追加し、レイアウトファイルを更新します。
+この更新には、領域 (divタグ) の追加、CSSクラスの追加、サイトナビゲーションの起点となる領域の追加も含まれます。
+完全なファイルをリスト 5.1に示します。
+続いて、これを構成している多くの部品について解説します。
+表示結果を今すぐ確認したいのであれば、図 5.2で確認できます (注:この時点ではわざわざ見に行くほどの仕上がりではありませんが)。
+
+##..............................
+リスト 5.1: 構造を追加したWebサイトのレイアウト
+#...............................
+app/views/layouts/application.html.erb
+ <!DOCTYPE html>
+<html>
+  <head>
+    <title><%= full_title(yield(:title)) %></title>
+    <%= csrf_meta_tags %>
+    <%= stylesheet_link_tag    'application', media: 'all',
+                               'data-turbolinks-track': 'reload' %>
+    <%= javascript_include_tag 'application',
+                               'data-turbolinks-track': 'reload' %>
+    <!--[if lt IE 9]>
+      <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/r29/html5.min.js">
+      </script>
+    <![endif]-->
+  </head>
+  <body>
+    <header class="navbar navbar-fixed-top navbar-inverse">
+      <div class="container">
+        <%= link_to "sample app", '#', id: "logo" %>
+        <nav>
+          <ul class="nav navbar-nav navbar-right">
+            <li><%= link_to "Home",   '#' %></li>
+            <li><%= link_to "Help",   '#' %></li>
+            <li><%= link_to "Log in", '#' %></li>
+          </ul>
+        </nav>
+      </div>
+    </header>
+    <div class="container">
+      <%= yield %>
+    </div>
+  </body>
+</html>
+#..............................
+
+それでは、リスト 5.1の新しい要素を上から順に見ていきましょう。
+3.4.1でも簡単に説明しましたが、RailsはデフォルトでHTML5を使います (<!DOCTYPE html>と書いてHTML5であることを宣言します)。
+ただHTML5は比較的新しく、一部のブラウザ (特に旧式のInternet Explorer) ではHTML5のサポートが不完全である場合があります。
+そのため、次のようなJavaScriptのコード (通称: HTML5 shim (or shiv))3を使ってこの問題を回避します。
+
+<!--[if lt IE 9]>
+  <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/r29/html5.min.js">
+  </script>
+<![endif]-->
+上のコードには、次のような奇妙な構文が含まれています。
+
+<!--[if lt IE 9]>
+これは、Microsoft Internet Explorer (IE) のバージョンが9より小さい場合 (if lt IE 9) にのみ、囲まれている行を実行します。
+この風変わりな文法 [if lt IE 9] は、Railsの一部ではありません。
+これは実は、条件付きコメントと呼ばれるもので、今回のような状況のためにInternet Explorerで特別にサポートされています。
+これにより、Firefox、Chrome、Safariなどの他のブラウザに影響を与えずに、IEのバージョンが9未満の場合にのみHTML5 shimを読み込めるため、非常に好都合です。
+
+それに続くセクションには、サイトのロゴを表示するheader、(divタグによる) いくつかの領域、ナビゲーションリンクのリストがあります。
+
+<header class="navbar navbar-fixed-top navbar-inverse">
+  <div class="container">
+    <%= link_to "sample app", '#', id: "logo" %>
+    <nav>
+      <ul class="nav navbar-nav navbar-right">
+        <li><%= link_to "Home",   '#' %></li>
+        <li><%= link_to "Help",   '#' %></li>
+        <li><%= link_to "Log in", '#' %></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+headerタグは、ページの上部に来るべき要素を表します。
+このheaderタグには、navbar、navbar-fixed-top、navbar-inverseという３つのCSSクラスがスペース区切りで与えられています4。
+
+<header class="navbar navbar-fixed-top navbar-inverse">
+すべてのHTML要素には、クラスとidの両方を指定することができます。
+これらは単なるラベルで、CSSでスタイルを指定するときに便利です (5.1.2)。
+クラスとidの主な違いは、クラスはページ内で何度でも使えるのに対し、idは一度しか使えない点です。
+今回の場合、すべてのnavbarクラスには、5.1.2でインストールするBootstrapフレームワークによって特別な意味が与えられます。
+
+headerタグの内側には2つのdivタグがあります。
+
+<div class="container">
+divタグは一般的な表示領域を表し、要素を別々のパーツに分けるときに使われます。
+特に古いスタイルのHTMLでは、divタグはサイト内のほぼすべての領域で使われていました。
+しかしHTML5からはよく使われる領域ごとに細分化できるようになり、具体的にはheader要素、nav要素、section要素が新たに使えるようになりました。
+なお、headerタグのクラスと同様に、divタグにもCSSクラス (container) が与えていますが、このクラスもBootstrapにおいて特別な意味を持っています。
+
+divに続いて、埋め込みRubyコードが出現します。
+
+<%= link_to "sample app", '#', id: "logo" %>
+<nav>
+  <ul class="nav navbar-nav navbar-right">
+    <li><%= link_to "Home",   '#' %></li>
+    <li><%= link_to "Help",   '#' %></li>
+    <li><%= link_to "Log in", '#' %></li>
+  </ul>
+</nav>
+ここでは、リンクを生成するために、Railsヘルパーのlink_toを使います (3.2.2で見たアンカータグaが最終的に生成されます)。
+link_toの第1引数はリンクテキスト、第2引数はURLです。
+このURLは5.3.3で名前付きルート (Named Routes) に置き換えますが、今はWebデザインで一般に使われるスタブ用の (とりあえずのダミーとして使われる) URL「’#’」を置いておきます。
+第3引数はオプションハッシュで、この場合はサンプルアプリのリンクでCSS id logoを指定しています(他の3つのリンクにはオプションハッシュが指定されていませんが、必須ではないので構いません)。
+Railsヘルパーは、このようにオプションのハッシュを取ることがよくあり、これによりRailsのコードから離れることなく任意のHTMLオプションを柔軟に追加することができます。
+
+divの内側の2番目の要素は、リストアイテムタグliと順不同リストタグulによって作られた、ナビゲーションリンクのリストです。
+
+<nav>
+  <ul class="nav navbar-nav navbar-right">
+    <li><%= link_to "Home",   '#' %></li>
+    <li><%= link_to "Help",   '#' %></li>
+    <li><%= link_to "Log in", '#' %></li>
+  </ul>
+</nav>
+正確にはここでは不要なのですが、navタグには「その内側がナビゲーションリンクである」という意図を明示的に伝える役割があります。
+さらに、ulタグに付与されているnavやnavbar-nav、navbar-rightクラスもBootstrapにおいて特別な意味を持ちます。
+したがって、5.1.2でBootstrapのCSSを追加したときに、これらのスタイルも自動的に適用されます。
+ブラウザからソースを見ることで確認ができますが、Railsが埋め込みRubyを評価し、レイアウトを描画すると、上のリストは次のように置き換わります5。
+
+<nav>
+  <ul class="nav navbar-nav navbar-right">
+    <li><a href="#">Home</a></li>
+    <li><a href="#">Help</a></li>
+    <li><a href="#">Log in</a></li>
+  </ul>
+</nav>
+これがブラウザに返されるHTMLになります。
+
+レイアウトの最後の部分は、メインコンテンツ用のdivです。
+
+<div class="container">
+  <%= yield %>
+</div>
+上と同様、containerクラスもBootstrapにおいて特別な意味を持ちます。
+3.4.3で学んだように、yieldメソッドはWebサイトのレイアウトにページごとの内容を挿入します。
+
+5.1.3で追加するサイトフッターを除いて、これでレイアウトは完成しました。
+Homeページへアクセスして表示結果を確認することができます。
+今後のスタイル要素を利用するために、home.html.erbビューに特別な要素をいくつか追加します (リスト 5.2)。
+
+##..............................
+リスト 5.2: サインアップページへのリンクがあるHomeページ
+#...............................
+app/views/static_pages/home.html.erb
+ <div class="center jumbotron">
+  <h1>Welcome to the Sample App</h1>
+
+  <h2>
+    This is the home page for the
+    <a href="https://railstutorial.jp/">Ruby on Rails Tutorial</a>
+    sample application.
+  </h2>
+
+  <%= link_to "Sign up now!", '#', class: "btn btn-lg btn-primary" %>
+</div>
+
+<%= link_to image_tag("rails.png", alt: "Rails logo"),
+            'http://rubyonrails.org/' %>
+#..............................
+
+第7章でサイトにユーザーを追加するときに備えて、最初のlink_toで次のような仮のリンクを生成します。
+
+<a href="#" class="btn btn-lg btn-primary">Sign up now!</a>
+上で挙げたdivタグのCSSクラスjumbotronや、signupボタンのbtnクラス、btn-lgクラス、btn-primaryクラスはすべて、Bootstrapにおいて特別な意味を持ちます。
+
+2番目のlink_toでは、引数として画像ファイルのパスと任意のオプションハッシュをとるimage_tagヘルパーの能力が示されています。
+このヘルパーでは、シンボルを使ってalt属性などを設定できます。
+一方で画像を表示するためには、rails.pngというRailsのロゴ画像ファイルを加える必要があります。
+Ruby on Rails公式ページの https://railstutorial.jp/rails.png から画像をダウンロードして、app/assets/images/ディレクトリにおいてください6。
+クラウドIDEやUnix系のOS (Max OS Xなど) を使っている場合は、次のようにcurlコマンドで簡単に取得することができます (リスト 5.3)。
+(curlコマンドの詳細についてはCommand Line Tutorial (英語) をご覧ください)
+
+##..............................
+リスト 5.3: 画像をダウンロードする
+#...............................
+$ curl -o app/assets/images/rails.png -OL railstutorial.jp/rails.png
+#..............................
+
+リスト 5.2で image_tagヘルパーを使っているので、Railsは該当する画像ファイルを、アセットパイプラインを通してapp/assets/images/ディレクトリの中から探してくれます (アセットパイプラインについては5.2で説明します)。
+
+さて、これで準備は完了です。
+環境によっては、ここで一度Railsサーバーを再起動する必要がある場合もあるので、必要に応じて (コラム 1.1) 再起動を試してみてください。
+うまく行くと、次の図 5.2のような結果になるはずです。
+
+
+#.....................
+images/figures/layout_no_logo_or_custom_css_bootstrap_3rd_edition
+  ==> layout_no_logo_or_custom_css_bootstrap_3rd_edition.png
+図 5.2: カスタムCSSを使っていないHomeページ
+#.....................
+
+image_tagの効果を確かめるために、ブラウザから生成されたHTMLを見てみましょう7。
+
+<img alt="Rails logo" src="/assets/rails-9308b8f92fea4c19a3a0d8385b494526.png" />
+ファイル名が重ならないようにするために、9308b8f92fea4c19a3a0d8385b494526という文字列 (実際の文字列はシステムごとに異なります) をRailsが追加していることがわかります。
+これは、例えば画像ファイルを新しい画像に更新したときに、ブラウザ内に保存されたキャッシュに意図的にヒットさせないようにするための仕組みです。
+また、src属性には "images" というディレクトリ名が含まれていないことにも注目してください。
+これはassetsディレクトリ内の他のディレクトリ (imagesやjavascripts、stylesheetsなど) も同様です。
+これは高速化のための仕組みで、Railsはassetsディレクトリ直下の画像をapp/assets/imagesディレクトリにある画像と紐付けています。
+これにより、ブラウザから見るとすべてのファイルが同じディレクトリにあるように見えるようになります。
+そして、このようなフラットなディレクトリ構成を採っていると、ファイルをより高速にブラウザに渡すことができるようになります。
+最後に、alt属性は、画像がない場合に代わりに表示される文字列です。
+例えば視覚障害のあるユーザーが使うスクリーンリーダーでは、ここの属性が読み上げられて、そこに画像があることが示されます。
+
+いよいよ、ここまでの苦労の成果を確認する準備ができました (図 5.2)。
+思っていたよりもみすぼらしいでしょうか。
+そうかもしれません。
+しかし、今回HTML要素に理にかなったクラスを付与したおかげで、CSSを使ってスタイルが追加できる素晴らしい状況になりました。
+
+演習
+Webページと言ったらネコ画像、というぐらいにはWebにはネコ画像が溢れていますよね。
+リスト 5.4のコマンドを使って、図 5.3のネコ画像をダウンロードしてきましょう8。
+mvコマンドを使って、ダウンロードしたkitten.jpgファイルを適切なアセットディレクトリに移動してください (参考: 5.2.1)。
+image_tagを使って、kitten.jpg画像を表示してみてください (図 5.4)。
+
+#.....................
+images/figures/kitten
+  ==> kitten.png
+図 5.3: Webで必須 (?) の子ネコ画像
+#.....................
+
+##..............................
+リスト 5.4: ネコ画像をインターネットからダウンロードする
+#...............................
+$ curl -OL cdn.learnenough.com/kitten.jpg
+#..............................
+
+
+#.....................
+images/figures/kitten_on_home
+  ==> kitten_on_home.png
+図 5.4: 子ネコ画像をHomeページに表示させた結果
+#.....................
+
+
+#-----------------------------------------------------
+[__ 5.1.2 ] BootstrapとカスタムCSS
+#-----------------------------------------------------
+
+5.1.1では、多くのHTML要素にCSSクラスを関連付けました。
+こうしておくことで、CSSベースでレイアウトを構成する際に高い柔軟性を与えてくれます。
+5.1.1で述べたように、これらのクラスの多くは、Twitterが作成したフレームワークであるBootstrap特有のものです。
+Bootstrapを使うと、洗練されたWebデザインとユーザーインターフェイス要素を簡単にHTML5アプリケーションに追加することができます。
+この節では、サンプルアプリケーションにスタイルを追加するために、カスタムCSSルールとBootstrapを組み合わせて使います。
+注目すべき点は、Bootstrapを使うことでアプリケーションをレスポンシブデザイン (Responsive Design) にできるということです。
+これにより、どの端末でアプリケーションを閲覧しても、ある程度見栄えをよくすることができます。
+
+最初に、リスト 5.5で示しているようにBootstrapを追加しましょう。
+これは、bootstrap-sass gemを使ってRailsアプリケーションに導入できます9。
+Bootstrapフレームワークでは、動的なスタイルシートを生成するためにLESS CSS言語を使っていますが、RailsのAsset Pipelineはデフォルトでは (LESSと非常によく似た) Sass言語をサポートします (5.2)。
+そのため、bootstrap-sassは、LESSをSassへ変換し、必要なBootstrapファイルを現在のアプリケーションですべて利用できるようにします10。
+
+##..............................
+リスト 5.5: Gemfileにbootstrap-sassを追加する
+#...............................
+source 'https://rubygems.org'
+
+gem 'rails',          '5.1.4'
+gem 'bootstrap-sass', '3.3.7'
+.
+.
+.
+#..............................
+
+いつものようにbundle installを実行して、Bootstrapをインストールします。
+
+$ bundle install
+ちなみに、rails generateコマンドを実行することでコントローラーごとに分けられたCSSファイルが自動的に生成されますが、これらのファイルを正しい順序で読み込ませるのは至難の技なので、本チュートリアルでは (簡潔のために) すべてのCSSを1つにまとめる方針を採っています。
+カスタムCSSを動かすための最初の一歩は、カスタムCSSファイルを作ることです。
+
+$ touch app/assets/stylesheets/custom.scss
+(ここでは3.3.3 の途中で紹介した touch コマンドを使っていますが、ファイルが作成できるなら [新規ファイル作成] や他のコマンドでも問題ありません。
+) このディレクトリ名とファイル名は、どちらも重要です。
+次のディレクトリは、
+
+app/assets/stylesheets/
+Asset Pipeline (5.2)の一部であり、このディレクトリに置かれたスタイルシートはapplication.cssの一部としてWebサイトのレイアウトに読み込まれます。
+さらに、ファイル名のcustom.scssには.scssという拡張子も含まれています。
+この拡張子は「Sass (Sassy CSS)」と呼ばれるCSSを拡張した言語で、アセットパイプラインはこのファイルの拡張子を見て、Sassを処理できるようにしています (Sassは5.2.2まで登場しませんが、bootstrap-sass gemが動作するためのおまじないとして必要です)。
+
+カスタムCSS用のファイルを作成したら、リスト 5.6のように@importを使って、Bootstrap (とそれに関連するSprockets) を読み込みます11。
+
+##..............................
+リスト 5.6: Bootstrap CSSを追加する
+#...............................
+app/assets/stylesheets/custom.scss
+ @import "bootstrap-sprockets";
+@import "bootstrap";
+#..............................
+
+リスト 5.6の2行では、Bootstrap CSSのフレームワークを導入しています。
+導入後、Webサーバを再起動させると、アプリケーションに反映させることができます。
+(1.3.2で紹介したように、Ctrl-Cを押してWebサーバを停止させた後、rails serverコマンドを打ってWebサーバを起動してください)。
+うまくいけば図 5.5のような結果になります。
+さて、テキストの配置は今ひとつで、ロゴにはスタイルもありませんが、色使いとsignupボタンはなかなかよい感じになってきました。
+
+
+#.....................
+images/figures/sample_app_only_bootstrap_3rd_edition
+  ==> sample_app_only_bootstrap_3rd_edition.png
+図 5.5: Bootstrap CSSとサンプルアプリケーション
+#.....................
+
+次に、リスト 5.7に示したように、Webサイト全体にわたってレイアウトと個別のページにスタイルを与えるためのCSSを追加します。
+テストの結果を図 5.6に示します。
+リスト 5.7には多数の記述ルールがあります。
+CSSの記述ルールを把握するためには、関心のある箇所をコメントアウトして表示を確認することをお勧めします。
+CSSでは /* … */ でコメントアウトできるので、調べてみたいコードをこれで囲い、表示がどのように変わるかを確認してみてください。
+
+##..............................
+リスト 5.7: すべてのページに適用される共通のスタイルをCSSに追加する
+#...............................
+app/assets/stylesheets/custom.scss
+ @import "bootstrap-sprockets";
+@import "bootstrap";
+
+/* universal */
+
+body {
+  padding-top: 60px;
+}
+
+section {
+  overflow: auto;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.center {
+  text-align: center;
+}
+
+.center h1 {
+  margin-bottom: 10px;
+}
+#..............................
+
+
+#.....................
+images/figures/sample_app_universal_3rd_edition
+  ==> sample_app_universal_3rd_edition.png
+図 5.6: スペースや共通スタイルを追加した結果
+#.....................
+
+リスト 5.7のCSSの形式は一貫しています。
+CSSルールでは一般に、クラス、id、HTMLタグ、またはそれらの組み合わせ、のいずれかを指定します。
+そしてその後ろにスタイリングコマンドのリストを記述します。
+例えば次のコードでは、
+
+body {
+  padding-top: 60px;
+}
+ページ上部に60ピクセルの余白を追加します。
+headerタグにnavbar-fixed-topクラスが与えられているので、これに従ってBootstrapはナビゲーションバーをページ上部に固定し、ナビゲーションバーの下に余白を置いて主要部分から分離します (デフォルトのnavbarの色がBootstrap 2.0から変更されたため、現在の淡色の代わりにダークな色調にしたい場合はnavbar-inverseクラスを使う必要があります)。
+また、このルールにある次のCSSは、
+
+.center {
+  text-align: center;
+}
+centerクラスにtext-align: centerプロパティを関連付けています。
+言い換えると、.center冒頭のドット.は、このルールがクラスに対してスタイルを適用することを示しています。
+なお、リスト 5.9に示したように、冒頭がポンド記号#で始まる場合は、そのルールがCSSのidに対してスタイルを適用することを示します。
+今回の場合、centerクラスに属している (divなどの) タグの内側にある要素が、すべて中央揃えになることを意味しています (リスト 5.2が実際の使用例です)。
+
+Bootstrapには洗練されたタイポグラフィーを利用できるCSSルールがありますが、ここではさらに、リスト 5.8のようにカスタムCSSルールを追加し、テキストの見栄えを変えてみましょう。
+なお、今回追加するルールはHomeページのすべてで適用されるとは限りませんが、サンプルアプリケーションの他の場所でも使われます。
+リスト 5.8を反映した結果を、図 5.7で確認することができます。
+
+##..............................
+リスト 5.8: 洗練されたタイポグラフィーを利用するためのCSSを追加する
+#...............................
+app/assets/stylesheets/custom.scss
+ @import "bootstrap-sprockets";
+@import "bootstrap";
+.
+.
+.
+/* typography */
+
+h1, h2, h3, h4, h5, h6 {
+  line-height: 1;
+}
+
+h1 {
+  font-size: 3em;
+  letter-spacing: -2px;
+  margin-bottom: 30px;
+  text-align: center;
+}
+
+h2 {
+  font-size: 1.2em;
+  letter-spacing: -1px;
+  margin-bottom: 30px;
+  text-align: center;
+  font-weight: normal;
+  color: #777;
+}
+
+p {
+  font-size: 1.1em;
+  line-height: 1.7em;
+}
+#..............................
+
+
+#.....................
+images/figures/sample_app_typography_3rd_edition
+  ==> sample_app_typography_3rd_edition.png
+図 5.7: タイポグラフィースタイルを追加する
+#.....................
+
+最後に、いくつかのルールをサイトロゴに追加します。
+このサイトロゴは「sample app」だけが表示されているシンプルなものです。
+リスト 5.9のCSSは、テキストを大文字に変換し、サイズ、色、配置を変更します (サイトロゴがページ内で一度しか使われないことを前提としてCSS idを使っていますが、代わりにクラスを使うこともできます)。
+
+##..............................
+リスト 5.9: サイトロゴにCSSを追加する
+#...............................
+app/assets/stylesheets/custom.scss
+ @import "bootstrap-sprockets";
+@import "bootstrap";
+.
+.
+.
+/* header */
+
+#logo {
+  float: left;
+  margin-right: 10px;
+  font-size: 1.7em;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: -1px;
+  padding-top: 9px;
+  font-weight: bold;
+}
+
+#logo:hover {
+  color: #fff;
+  text-decoration: none;
+}
+#..............................
+
+上のコードのcolor: #fffは、ロゴの色を白に変更します。
+HTMLの色は、16進数 (基数が16) の3つの数値の組み合わせで表現され、赤、緑、青の三原色に (この順序で) コード化することができます。
+本来は#ffffffと書いて3色すべてを最大にする必要がありますが、上のコードでは#fffという#ffffffの短縮形を使っています。
+ちなみにCSS標準では、HTMLの色には別名も多数定義されています。
+例えば先ほどの#fffは、whiteと書くこともできます。
+話を戻して、リスト 5.9のCSSが反映されると、図 5.8のようになっていれば成功です。
+
+
+#.....................
+images/figures/sample_app_logo_3rd_edition
+  ==> sample_app_logo_3rd_edition.png
+図 5.8: デザインされたロゴとサンプルアプリ
+#.....................
+
+演習
+リスト 5.10を参考にして、5.1.1.1で使ったネコ画像をコメントアウトしてみてください。
+また、ブラウザのHTMLインスペクタ機能を使って、コメントアウトするとHTMLのソースからも消えていることを確認してみてください。
+リスト 5.11のコードをcustom.scssに追加し、すべての画像を非表示にしてみてください。
+うまくいけば、Railsのロゴ画像がHomeページから消えるはずです。
+先ほどと同様にインスペクタ機能を使って、今度はHTMLのソースコードは残ったままで、画像だけが表示されなくなっていることを確認してみてください。
+##..............................
+リスト 5.10: 埋め込みRubyのコードをコメントアウトする
+#...............................
+<%#= image_tag("kitten.jpg", alt: "Kitten") %>
+#..............................
+
+##..............................
+リスト 5.11: すべての画像を非表示にするCSS
+#...............................
+img {
+  display: none;
+}
+#..............................
+
+
+#-----------------------------------------------------
+[__ 5.1.3 ] パーシャル (partial)
+#-----------------------------------------------------
+
+リスト 5.1のレイアウトはその目的を果たしていますが、少々散らかっています。
+HTML shimは、それだけで3行も占有し、風変わりなIE特有の文法を使っているので、これをうまく隠すことができたらどんなによいでしょう。
+また、HTMLヘッダーは論理的な単位を形成するため、一箇所にまとめる必要もあります。
+Railsでは、パーシャル (partial) と呼ばれる機能を使ってこれを実現できます。
+最初に、パーシャルを定義するとレイアウトがどのように変わるかを見てみましょう (リスト 5.12)。
+
+##..............................
+リスト 5.12: レイアウトにshimとheaderのパーシャルを追加する
+#...............................
+app/views/layouts/application.html.erb
+ <!DOCTYPE html>
+<html>
+  <head>
+    <title><%= full_title(yield(:title)) %></title>
+    <%= csrf_meta_tags %>
+    <%= stylesheet_link_tag    'application', media: 'all',
+                               'data-turbolinks-track': 'reload' %>
+    <%= javascript_include_tag 'application',
+                               'data-turbolinks-track': 'reload' %>
+    <%= render 'layouts/shim' %>
+  </head>
+  <body>
+    <%= render 'layouts/header' %>
+    <div class="container">
+      <%= yield %>
+    </div>
+  </body>
+</html>
+#..............................
+
+リスト 5.12では、次のようにrenderと呼ばれるRailsヘルパー呼び出しだけを使って、HTML shimのスタイルシート行を置換しています。
+
+<%= render 'layouts/shim' %>
+この行では、app/views/layouts/_shim.html.erbというファイルを探してその内容を評価し、結果をビューに挿入しています12 (<%= ... %> は、テンプレート内でRubyの式を評価するための埋め込みRuby記法であることを思い出してください。
+評価した結果がテンプレートに挿入されます)。
+ファイル名 _shim.html.erb の先頭にあるアンダースコアに注目してください。
+このアンダースコアは、パーシャルで使う普遍的な命名規約であり、また、一目見ただけでディレクトリ中のすべてのパーシャルを識別することが可能になります。
+
+もちろん、パーシャルが動作するためには、それに対応するファイルとコンテンツを記述しなければなりません。
+このshimパーシャルの場合は、リスト 5.1のわずか3行のshimコードだけです。
+作成したコードをリスト 5.13に示します。
+
+##..............................
+リスト 5.13: HTML shim用のパーシャル
+#...............................
+app/views/layouts/_shim.html.erb
+ <!--[if lt IE 9]>
+  <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/r29/html5.min.js">
+  </script>
+<![endif]-->
+同様に、ヘッダーの情報もリスト 5.14のパーシャルに移動し、renderを呼び出してレイアウトに挿入することができます。
+(パーシャルでは、自動生成せずに、テキストエディタを使って手動で作成するのが一般的です。
+)
+
+#..............................
+
+##..............................
+リスト 5.14: header用のパーシャル
+#...............................
+app/views/layouts/_header.html.erb
+ <header class="navbar navbar-fixed-top navbar-inverse">
+  <div class="container">
+    <%= link_to "sample app", '#', id: "logo" %>
+    <nav>
+      <ul class="nav navbar-nav navbar-right">
+        <li><%= link_to "Home",   '#' %></li>
+        <li><%= link_to "Help",   '#' %></li>
+        <li><%= link_to "Log in", '#' %></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+#..............................
+
+これでパーシャルの作成方法がわかりましたので、今度はヘッダーに対応するフッタを同じ方法で追加しましょう。
+ここまでくれば、ファイル名は _footer.html.erb で、layoutsディレクトリ (リスト 5.15) に置けばよいということが分かると思います13。
+
+##..............................
+リスト 5.15: footer用のパーシャル
+#...............................
+app/views/layouts/_footer.html.erb
+ <footer class="footer">
+  <small>
+    The <a href="https://railstutorial.jp/">Ruby on Rails Tutorial</a>
+    by <a href="http://www.michaelhartl.com/">Michael Hartl</a>
+  </small>
+  <nav>
+    <ul>
+      <li><%= link_to "About",   '#' %></li>
+      <li><%= link_to "Contact", '#' %></li>
+      <li><a href="http://news.railstutorial.org/">News</a></li>
+    </ul>
+  </nav>
+</footer>
+#..............................
+
+ヘッダーの場合と同様に、フッターの中でもlink_toメソッドを使って、AboutページとContactページへの内部リンクを追加してあります。
+ひとまず、リンク先のURLは’#’としておきます (headerタグと同様、footerタグもHTML5で新たに追加された要素です)。
+
+footerパーシャルは、スタイルシートやheaderパーシャルのときと同じ方法でレイアウト中に追加できます (リスト 5.16)。
+
+##..............................
+リスト 5.16: レイアウトにfooterパーシャルを追加する
+#...............................
+app/views/layouts/application.html.erb
+ <!DOCTYPE html>
+<html>
+  <head>
+    <title><%= full_title(yield(:title)) %></title>
+    <%= csrf_meta_tags %>
+    <%= stylesheet_link_tag    'application', media: 'all',
+                               'data-turbolinks-track': 'reload' %>
+    <%= javascript_include_tag 'application',
+                               'data-turbolinks-track': 'reload' %>
+    <%= render 'layouts/shim' %>
+  </head>
+  <body>
+    <%= render 'layouts/header' %>
+    <div class="container">
+      <%= yield %>
+      <%= render 'layouts/footer' %>
+    </div>
+  </body>
+</html>
+#..............................
+
+そのまま実際にfooterを表示してみるとどうにも見苦しいので、リスト 5.17でスタイルを若干追加しましょう。
+スタイルを追加した結果を図 5.9に示します。
+
+##..............................
+リスト 5.17: サイトにfooter用CSSを追加する
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* footer */
+
+footer {
+  margin-top: 45px;
+  padding-top: 5px;
+  border-top: 1px solid #eaeaea;
+  color: #777;
+}
+
+footer a {
+  color: #555;
+}
+
+footer a:hover {
+  color: #222;
+}
+
+footer small {
+  float: left;
+}
+
+footer ul {
+  float: right;
+  list-style: none;
+}
+
+footer ul li {
+  float: left;
+  margin-left: 15px;
+}
+#..............................
+
+
+#.....................
+images/figures/site_with_footer_bootstrap_3rd_edition
+  ==> site_with_footer_bootstrap_3rd_edition.png
+図 5.9: Homeページにfooterを追加する
+#.....................
+
+演習
+Railsがデフォルトで生成するheadタグの部分を、リスト 5.18のようにrenderに置き換えてみてください。
+ヒント: 単純に削除してしまうと後でパーシャルを１から書き直す必要が出てくるので、削除する前にどこかに退避しておきましょう。
+リスト 5.18のようなパーシャルはまだ作っていないので、現時点ではテストは redになっているはずです。
+実際にテストを実行して確認してみましょう。
+layoutsディレクトリにheadタグ用のパーシャルを作成し、先ほど退避しておいたコードを書き込み、最後にテストが green に戻ることを確認しましょう。
+##..............................
+リスト 5.18: Railsのデフォルトのheadタグをrenderに置き換える
+#...............................
+app/views/layouts/application.html.erb
+ <!DOCTYPE html>
+<html>
+  <head>
+    <title><%= full_title(yield(:title)) %></title>
+    <%= render 'layouts/rails_default' %>
+    <%= render 'layouts/shim' %>
+  </head>
+  <body>
+    <%= render 'layouts/header' %>
+    <div class="container">
+      <%= yield %>
+      <%= render 'layouts/footer' %>
+    </div>
+  </body>
+</html>
+#..............................
+
+
+#-----------------------------
+[_ 5.2 ] Sassとアセットパイプライン
+#-----------------------------
+
+最近のRailsに追加された機能の中で最も特筆すべき機能の１つは、CSS、JavaScript、画像などの静的コンテンツの生産性と管理を大幅に強化する「アセットパイプライン (Asset Pipeline)」です。
+このセクションでは、アセットパイプラインの概要と、素晴らしいCSS生成ツールである「Sass」の使い方について説明します。
+
+
+#-----------------------------------------------------
+[__ 5.2.1 ] アセットパイプライン
+#-----------------------------------------------------
+
+Rails開発者の視点からは、アセットディレクトリ、マニフェストファイル、プリプロセッサエンジンという、3つの主要な機能が理解の対象となります14。
+では、それぞれを順に見ていきましょう。
+
+アセットディレクトリ
+Railsのアセットパイプラインでは、静的ファイルを目的別に分類する、標準的な３つのディレクトリが使われています。
+
+app/assets: 現在のアプリケーション固有のアセット
+lib/assets: あなたの開発チームによって作成されたライブラリ用のアセット
+vendor/assets: サードパーティのアセット
+これらのディレクトリには、それぞれのアセットクラス用のサブディレクトリがあります。
+例えばapp/assetsの場合、次のような画像用、JavaScript用、CSS用のサブディレクトリがあります。
+
+$ ls app/assets/
+
+#.....................
+images/  javascripts/  stylesheets/
+  ==>   stylesheets.png
+上記の説明から、5.1.2で取り上げたカスタムCSSが配置された場所と、その理由について理解することができると思います。
+つまり、custom.scssはサンプルアプリケーション固有のアセットなので、app/assets/stylesheetsに配置されていたのです。
+
+マニフェストファイル
+静的ファイル (アセット) を上記の場所へそれぞれ配置すれば、マニフェストファイルを使って、それらをどのように1つのファイルにまとめるのかをRailsに指示することができます。
+なお、実際にアセットをまとめる処理を行うのはSprocketsというgemです。
+また、マニフェストファイルはCSSとJavaScriptには適用されますが、画像ファイルには適用されません。
+1つの具体例として、アプリケーションのCSS用マニフェストファイルを見てみましょう (リスト 5.19)。
+
+##..............................
+リスト 5.19: アプリケーション固有のCSS用マニフェストファイル
+#...............................
+app/assets/stylesheets/application.css
+ /*
+ * This is a manifest file that'll be compiled into application.css, which
+ * will include all the files listed below.
+ *
+ * Any CSS and SCSS file within this directory, lib/assets/stylesheets,
+ * vendor/assets/stylesheets, or vendor/assets/stylesheets of plugins, if any,
+ * can be referenced here using a relative path.
+ *
+ * You're free to add application-wide styles to this file and they'll appear
+ * at the bottom of the compiled file so the styles you add here take
+ * precedence over styles defined in any styles defined in the other CSS/SCSS
+ * files in this directory. It is generally better to create a new file per
+ * style scope.
+ *
+ *= require_tree .
+ *= require_self
+ */
+#..............................
+
+上の行で重要な部分は、実はCSSコメントの中にあります。
+コメント内の次の部分は、Sprocketsが適切なファイルを読み込むために使われます。
+
+/*
+ .
+ .
+ .
+ *= require_tree .
+ *= require_self
+*/
+例えばこの行は、
+
+ *= require_tree .
+app/assets/stylesheetsディレクトリ (サブディレクトリを含む) 中のすべてのCSSファイルが、アプリケーションCSSに含まれるようにしています。
+また、次の行は、
+
+ *= require_self
+CSSの読み込みシーケンスの中で、application.css自身もその対象に含めています。
+
+Railsには実用的なデフォルトのマニフェストファイルが付属しているので、Railsチュートリアルでは変更を加える必要がありませんが、もし必要な場合は、Railsガイドの「アセットパイプライン」で詳細な情報を参照できます。
+
+プリプロセッサエンジン
+必要なアセットをディレクトリに配置してまとめた後、Railsはさまざまなプリプロセッサエンジンを介してそれらを実行し、ブラウザに配信できるようにそれらをマニフェストファイルを用いて結合し、サイトテンプレート用に準備します。
+Railsはどのプリプロセッサを使うのかを、ファイル名の拡張子を使って判断します。
+最も一般的な拡張子は、Sass用の.scss、CoffeeScript用の.coffee、埋め込みRuby (ERb) 用の.erbです。
+3.4.3では最初にERbを、5.2.2ではSassをそれぞれ扱いました (なお本書では詳しく説明しませんが、CoffeeScriptはエレガントかつ簡潔な言語で、JavaScriptにコンパイルしてくれるJavaScriptの拡張言語です)。
+
+プリプロセッサエンジンは、繋げて実行する (chain) ことができます。
+
+foobar.js.coffee
+
+上の拡張子の場合、CoffeeScriptプロセッサ経由で実行されます。
+
+foobar.js.erb.coffee
+
+上の拡張子の場合は、CoffeeScriptとERbの両方で実行されます (コードは右から左へと実行されますので、この例ではCoffeeScriptが最初に実行されます)。
+
+本番環境での効率性
+Asset Pipelineの最大のメリットの1つは、本番のアプリケーションで効率的になるように最適化されたアセットも自動的に生成されることです。
+従来は、CSSとJavaScriptを整理するために、機能を個別のファイルに分割し、(インデントを多用して) 読みやすいフォーマットに整えていました。
+これは、プログラマにとっては便利な方法ですが、本番環境にとっては非効率です。
+それというのも、最小化されていないCSSやJavaScriptファイルを多数に分割すると、ページの読み込み時間が著しく遅くなるからです (読み込み時間は、ユーザー体験の質に影響を与える重要な指標の1つです)。
+Asset Pipelineを使うと、この「開発効率と読み込み時間のどちらを重視するか」という問題について悩む必要がなくなります。
+開発環境ではプログラマにとって読みやすいように整理しておき、本番環境ではAsset Pipelineを使ってファイルを最小化すればよいのです。
+具体的には、Asset Pipelineがすべてのスタイルシートを1つのCSSファイル (application.css) にまとめ、すべてのJavaScriptファイルを1つのJSファイル (javascripts.js) にまとめてくれます。
+さらに、それらのファイルすべてに対して 不要な空白やインデントを取り除く処理を行い、ファイルサイズを最小化してくれます。
+結果として、開発環境と本番環境という、2つの異なった状況に対してそれぞれ最高の環境を提供してくれます。
+
+
+#-----------------------------------------------------
+[__ 5.2.2 ] 素晴らしい構文を備えたスタイルシート
+#-----------------------------------------------------
+
+Sass は、スタイルシートを記述するための言語であり、CSSに比べて多くの点が強化されています。
+この節では、Sassが提供する2つの重要な機能、ネストと変数について説明します。
+(3つ目の重要な機能であるミックスインについては、7.1.1で紹介します。
+)
+
+5.1.2でも簡単に説明しましたが、SassはSCSSというフォーマットに対応しています (.scssという拡張子はSCSSであることを表します)。
+SCSSは厳密な意味で、CSS本体を抽象化したフォーマットです。
+つまり、SCSSはCSSに新しい機能を追加しただけで、全く新しい構文を定義したようなものではないということです15。
+このため、有効なCSSファイルは、すべてSCSSファイルとしても扱うことができ、既存の記法ルールを使っているプロジェクトにとっても互換性のある便利なフォーマットになっています。
+本書の例では、Bootstrapの恩恵を得るために、私達は最初からSCSSを使っています。
+Railsのアセットパイプラインは、.scssという拡張子を持つファイルをSassを使って自動的に処理してくれます。
+このため、custom.scssファイルはSassプリプロセッサによって前処理され、その後ブラウザへの配信に備えてパッケージ化されます。
+
+ネスト
+スタイルシート内に共通のパターンがある場合は、要素をネストさせることができます。
+例えばリスト 5.7では、次のように.centerと.center h1の両方に対してルールがあります。
+
+.center {
+  text-align: center;
+}
+
+.center h1 {
+  margin-bottom: 10px;
+}
+上のルールは、Sassを使って次のように書き換えることができます。
+
+.center {
+  text-align: center;
+  h1 {
+    margin-bottom: 10px;
+  }
+}
+上の例では、ネストの内側にあるh1というルールは、.centerのルールを継承しています。
+
+今度は、もう少し異なるルールに対してネスト機能を使う例を見てみましょう。
+リスト 5.9には次のコードがあります。
+
+#logo {
+  float: left;
+  margin-right: 10px;
+  font-size: 1.7em;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: -1px;
+  padding-top: 9px;
+  font-weight: bold;
+}
+
+#logo:hover {
+  color: #fff;
+  text-decoration: none;
+}
+上のコードでは#logoというidが2回使われています。
+1回目はロゴ自身を定義するために、2回目はhover属性を定義するために使われています (なおhover属性は、該当する要素の上にマウスポインタをかざしたときの表示を定義します)。
+2つ目のルールをネストするためには、親属性である#logoを参照する必要があります。
+このような場合、SCSSでは次のようにアンパーサンド&を使って実現できます。
+
+#logo {
+  float: left;
+  margin-right: 10px;
+  font-size: 1.7em;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: -1px;
+  padding-top: 9px;
+  font-weight: bold;
+  &:hover {
+    color: #fff;
+    text-decoration: none;
+  }
+}
+Sassは、SCSSをCSSに変換する際に、&:hoverを#logo:hoverに置き換えています。
+
+これらのネスト機能は、フッターのCSSでも使えます。
+リスト 5.17のコードは、SCSSを使って次のように書き換えることができます。
+
+footer {
+  margin-top: 45px;
+  padding-top: 5px;
+  border-top: 1px solid #eaeaea;
+  color: #777;
+  a {
+    color: #555;
+    &:hover {
+      color: #222;
+    }
+  }
+  small {
+    float: left;
+  }
+  ul {
+    float: right;
+    list-style: none;
+    li {
+      float: left;
+      margin-left: 15px;
+    }
+  }
+}
+リスト 5.17を手作業で変換してみることは、良い演習になります (実際に5.2.2.3でも取り入れてみました)。
+変換後にも、CSSが適切に動作していることを確認してみましょう。
+
+変数
+Sassでは、冗長なコードを削除し、より自由な表現を可能にするために、変数が定義できるようになっています。
+例えばリスト 5.8やリスト 5.17を見てみると、同じ色を繰り返し参照している箇所があります。
+
+h2 {
+  .
+  .
+  .
+  color: #777;
+}
+.
+.
+.
+footer {
+  .
+  .
+  .
+  color: #777;
+}
+上のコードの#777は薄い灰色を指しています。
+Sassでは、このような値を変数として定義し、次のように変数名を与えることができます。
+
+$light-gray: #777;
+この機能を使って、SCSSを次のように書き直すことができます。
+
+$light-gray: #777;
+.
+.
+.
+h2 {
+  .
+  .
+  .
+  color: $light-gray;
+}
+.
+.
+.
+footer {
+  .
+  .
+  .
+  color: $light-gray;
+}
+$light-grayのような変数名は、#777のような値よりも分かりやすいので、たとえその変数が繰り返し使われないとしても、変数名を与えることは多くの場合有用です。
+実際、Bootstrapフレームワークでは、多くの色に対して変数名を定義しています。
+定義されている変数はBootstrapページの「LESS変数一覧」で参照することができます。
+このWebサイトでは、SassではなくLESSを使って変数が定義されていますが、bootstrap-sassというgemを使えば、Sassでも同様の変数が使えるようになります。
+例えばLESSではアットマーク@を使っているのに対して、Sassはドルマーク$を使っていることはすぐにわかります。
+話を戻して、Bootstrapの変数の一覧表を見ると、薄い灰色に対して次の変数名が与えられることに気が付きます。
+
+ @gray-light: #777;
+これはつまり、bootstrap-sassというgemを使えば、SCSSでも同様に$gray-lightという変数が使えることを意味しています。
+先ほど定義した$light-grayというカスタム変数の代わりに、用意された変数を使ってみましょう。
+
+h2 {
+  .
+  .
+  .
+  color: $gray-light;
+}
+.
+.
+.
+footer {
+  .
+  .
+  .
+  color: $gray-light;
+}
+今回取り上げたSassのネスト機能や変数機能を使ってSCSSファイルを全面的に書き直すと、リスト 5.20のようになります。
+このリストでは、Sassの変数 (詳しくはBootstrap LESSの変数一覧を参照) や、組み込みの色変数 (例えば#fffにはwhiteという変数) を使っています。
+footerタグのルールが、劇的に向上していることを確認してみてください。
+
+##..............................
+リスト 5.20: ネストや変数を使って初期のSCSSファイルを書き直した結果
+#...............................
+app/assets/stylesheets/custom.scss
+ @import "bootstrap-sprockets";
+@import "bootstrap";
+
+/* mixins, variables, etc. */
+
+$gray-medium-light: #eaeaea;
+
+/* universal */
+
+body {
+  padding-top: 60px;
+}
+
+section {
+  overflow: auto;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.center {
+  text-align: center;
+  h1 {
+    margin-bottom: 10px;
+  }
+}
+
+/* typography */
+
+h1, h2, h3, h4, h5, h6 {
+  line-height: 1;
+}
+
+h1 {
+  font-size: 3em;
+  letter-spacing: -2px;
+  margin-bottom: 30px;
+  text-align: center;
+}
+
+h2 {
+  font-size: 1.2em;
+  letter-spacing: -1px;
+  margin-bottom: 30px;
+  text-align: center;
+  font-weight: normal;
+  color: $gray-light;
+}
+
+p {
+  font-size: 1.1em;
+  line-height: 1.7em;
+}
+
+
+/* header */
+
+#logo {
+  float: left;
+  margin-right: 10px;
+  font-size: 1.7em;
+  color: white;
+  text-transform: uppercase;
+  letter-spacing: -1px;
+  padding-top: 9px;
+  font-weight: bold;
+  &:hover {
+    color: white;
+    text-decoration: none;
+  }
+}
+
+/* footer */
+
+footer {
+  margin-top: 45px;
+  padding-top: 5px;
+  border-top: 1px solid $gray-medium-light;
+  color: $gray-light;
+  a {
+    color: $gray;
+    &:hover {
+      color: $gray-darker;
+    }
+  }
+  small {
+    float: left;
+  }
+  ul {
+    float: right;
+    list-style: none;
+    li {
+      float: left;
+      margin-left: 15px;
+    }
+  }
+}
+#..............................
+
+Sassを使ってスタイルシートをより簡単にする方法は他にもありますが、今回はその中でも最も重要な機能を使ってリスト 5.20を書き直しました。
+Sassを使うことによって、素晴らしいスタートを切ることができました。
+Sassの詳細については、Sassの公式サイト (英語) を参照してください。
+
+演習
+5.2.2で提案したように、footerのCSSを手作業で変換してみましょう。
+具体的には、リスト 5.17の内容を１つずつ変換していき、リスト 5.20のようにしてみてください。
+
+#-----------------------------
+[_ 5.3 ] レイアウトのリンク
+#-----------------------------
+
+サイトのレイアウトが美しく仕上がったので、今度は’#’で代用していたリンクを書き換えてみましょう。
+もちろん、次のようにリンクを直接記述することもできます。
+
+<a href="/static_pages/about">About</a>
+しかし、上の記法はRails流ではありません。
+まず、aboutページへのURLは /static_pages/about よりも /about の方がよいでしょう。
+さらに、Railsでは次のようなコードでは名前付きルートを使うのが慣例となっています。
+
+<%= link_to "About", about_path %>
+上のようにすることでコードの意味がわかりやすくなり、about_pathの定義を変えればabout_pathが使われているすべてのURLを変更できるため、柔軟性が高まります。
+
+今後使う予定のURLとルーティング (route) とのマッピングを、表 5.1に示します。
+3.4.4で最初のルートは設定済みですが、それ以外のルートについても同様に実装していきます。
+なお、loginについては本章の最後で少しだけ実装します (第8章で本格的に実装します)。
+
+ページ名	URL	名前付きルート
+Home	/	root_path
+About	/about	about_path
+Help	/help	help_path
+Contact	/contact	contact_path
+Sign up	/signup	signup_path
+Log in	/login	login_path
+表 5.1: サイトリンクのルーティングとURLのマッピング
+
+#-----------------------------------------------------
+[__ 5.3.1 ] Contactページ
+#-----------------------------------------------------
+
+まずは、第3章の演習で取り上げたContactページについて追加しましょう。
+Contactページのテストをリスト 5.21に示します。
+これは単にリスト 3.24で使われているテストのパターンに従ったものです。
+
+##..............................
+リスト 5.21: Contactページのテストred
+#...............................
+test/controllers/static_pages_controller_test.rb
+ require 'test_helper'
+
+class StaticPagesControllerTest < ActionDispatch::IntegrationTest
+
+  test "should get home" do
+    get static_pages_home_url
+    assert_response :success
+    assert_select "title", "Ruby on Rails Tutorial Sample App"
+  end
+
+  test "should get help" do
+    get static_pages_help_url
+    assert_response :success
+    assert_select "title", "Help | Ruby on Rails Tutorial Sample App"
+  end
+
+  test "should get about" do
+    get static_pages_about_url
+    assert_response :success
+    assert_select "title", "About | Ruby on Rails Tutorial Sample App"
+  end
+
+  test "should get contact" do
+    get static_pages_contact_url
+    assert_response :success
+    assert_select "title", "Contact | Ruby on Rails Tutorial Sample App"
+  end
+end
+#..............................
+
+この時点では、リスト 5.21のテストは redになっているはずです。
+
+##..............................
+リスト 5.22: red
+#...............................
+$ rails test
+#..............................
+
+アプリケーションコードは、3.3のAboutページへの追加と良く似ています。
+最初にルート (リスト 5.23) を更新します。
+次にcontactアクションをStaticPagesコントローラ (リスト 5.24) に追加します。
+最後にContactビュー (リスト 5.25) を作成します。
+
+##..............................
+リスト 5.23: Contactページのルートを追加する red
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root 'static_pages#home'
+  get  'static_pages/home'
+  get  'static_pages/help'
+  get  'static_pages/about'
+  get  'static_pages/contact'
+end
+#..............................
+
+##..............................
+リスト 5.24: Contactページ用のアクションを追加する red
+#...............................
+app/controllers/static_pages_controller.rb
+ class StaticPagesController < ApplicationController
+  .
+  .
+  .
+  def contact
+  end
+end
+#..............................
+
+##..............................
+リスト 5.25: Contactページのビューを追加する green
+#...............................
+app/views/static_pages/contact.html.erb
+ <% provide(:title, 'Contact') %>
+<h1>Contact</h1>
+<p>
+  Contact the Ruby on Rails Tutorial about the sample app at the
+  <a href="https://railstutorial.jp/contact">contact page</a>.
+</p>
+#..............................
+
+ここで、すべてのテストが greenであることを確認しておいてください。
+
+##..............................
+リスト 5.26: green
+#...............................
+$ rails test
+#..............................
+
+
+#-----------------------------------------------------
+[__ 5.3.2 ] RailsのルートURL
+#-----------------------------------------------------
+
+本項では、名前付きルートをサンプルアプリケーションの静的ページで使うために、ルーティング用のファイル (config/routes.rb) を編集していきます。
+まずは、3.4.4で定義したHomeページのルーティングについて見直していきましょう。
+あのときは特別にHomeページのみ設定をしましたが、残りの静的ページについても同様にルーティングを設定していきます。
+
+私たちはこれまでに、ルートURLを定義するコードを3回見てきました。
+1つ目は、
+
+root 'application#hello'
+というHelloアプリケーションのコード (リスト 1.9)です。
+2つ目は、
+
+root 'users#index'
+というToyアプリケーションのコード (リスト 2.6)。
+そして最後は、
+
+root 'static_pages#home'
+というSampleアプリケーションのコードです (リスト 3.41)。
+いずれの場合においても、rootメソッドを使ってルートURL "/" をコントローラーのアクションに紐付けていました。
+ルートURLのようなルーティングを定義することの効果は、ブラウザからアクセスしやすくすることだけではありません。
+それ以外にも、生のURLではなく、名前付きルートを使ってURLを参照することができるようになります。
+例えばルートURLを定義すると、root_pathやroot_urlといったメソッドを通してURLを参照することができます。
+ちなみに前者はルートURL以下の文字列を、後者は完全なURLの文字列を返します。
+
+root_path -> '/'
+root_url  -> 'http://www.example.com/'
+なお、Railsチュートリアルでは一般的な規約に従い、基本的には_path書式を使い、リダイレクトの場合のみ_url書式を使うようにします。
+これはHTTPの標準としては、リダイレクトのときに完全なURLが要求されるためです。
+ただしほとんどのブラウザでは、どちらの方法でも動作します。
+
+リスト 5.21などで使われたデフォルトのルーティングはやや回りくどいので、HelpページやAboutページ、Contactページなどの名前付きルートを定義していきましょう。
+具体的には、getルールを使って定義していきます (リスト 5.23)。
+例えば次のようなルーティングは、
+
+get 'static_pages/help'
+このように変換します。
+
+get  '/help', to: 'static_pages#help'
+このようにgetルールを使って変更すると、GETリクエストが /help に送信されたときにStaticPagesコントローラーのhelpアクションを呼び出してくれるようになります。
+また、ルートURLのときと同様に、help_pathやhelp_urlといった名前付きルートも使えるようになります。
+
+help_path -> '/help'
+help_url  -> 'http://www.example.com/help'
+他の静的ページについても同様にルーティングを変更していくと、リスト 5.23はリスト 5.27のようなコードになります。
+
+##..............................
+リスト 5.27: 静的なページのルーティング一覧 red
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root 'static_pages#home'
+  get  '/help',    to: 'static_pages#help'
+  get  '/about',   to: 'static_pages#about'
+  get  '/contact', to: 'static_pages#contact'
+end
+#..............................
+
+なお、リスト 5.27では’static_pages/home’という以前のルールを削除している点に注意してください。
+今後は常にroot_pathまたはroot_urlを使っていきます。
+
+さらに、リスト 5.21のテストも古くなったので、変更する必要があります。
+実際、現時点のテストは redになっているはずです。
+もう一度 green の状態に戻すには、次のリスト 5.28のように修正していく必要があります。
+このとき、先ほどのルーティングの変更で名前付きルート (*_path) が使えるようになったので、早速テストの修正で使っている点に注意してください。
+
+##..............................
+リスト 5.28: StaticPagesで扱う新しい名前付きルートに対するテスト green
+#...............................
+test/controllers/static_pages_controller_test.rb
+ require 'test_helper'
+
+class StaticPagesControllerTest < ActionDispatch::IntegrationTest
+
+  test "should get home" do
+    get root_path
+    assert_response :success
+    assert_select "title", "Ruby on Rails Tutorial Sample App"
+  end
+
+  test "should get help" do
+    get help_path
+    assert_response :success
+    assert_select "title", "Help | Ruby on Rails Tutorial Sample App"
+  end
+
+  test "should get about" do
+    get about_path
+    assert_response :success
+    assert_select "title", "About | Ruby on Rails Tutorial Sample App"
+  end
+
+  test "should get contact" do
+    get contact_path
+    assert_response :success
+    assert_select "title", "Contact | Ruby on Rails Tutorial Sample App"
+  end
+end
+#..............................
+
+演習
+実は名前付きルートは、as:オプションを使って変更することができます。
+有名なFar Sideの漫画に倣って、Helpページの名前付きルートをhelfに変更してみてください (リスト 5.29)。
+先ほどの変更により、テストが redになっていることを確認してください。
+リスト 5.28を参考にルーティングを更新して、テストを greenにして見てください。
+エディタのUndo機能を使って、今回の演習で行った変更を元に戻して見てください。
+##..............................
+リスト 5.29: helpをhelfに変更する
+#...............................
+Rails.application.routes.draw do
+  root 'static_pages#home'
+  get  '/help',    to: 'static_pages#help', as: 'helf'
+  get  '/about',   to: 'static_pages#about'
+  get  '/contact', to: 'static_pages#contact'
+end
+#..............................
+
+
+#-----------------------------------------------------
+[__ 5.3.3 ] 名前付きルート
+#-----------------------------------------------------
+
+リスト 5.27でルートを定義したことにより、レイアウトの中で名前付きルートが使えるようになりました。
+早速、link_toメソッドの2番目の引数で、適切な名前付きルートを使ってみましょう。
+例えば次のコードの場合、
+
+<%= link_to "About", '#' %>
+このように置き換えます。
+
+<%= link_to "About", about_path %>
+他も同様です。
+
+最初に、HomeページとHelpページへのリンクを持つheaderパーシャル _header.html.erb (リスト 5.30) から取り掛かります。
+headerパーシャルでは、Web共通の慣習に従って、ロゴにもHomeページへのリンクを追加します。
+
+##..............................
+リスト 5.30: headerパーシャルにリンクを追加する
+#...............................
+app/views/layouts/_header.html.erb
+ <header class="navbar navbar-fixed-top navbar-inverse">
+  <div class="container">
+    <%= link_to "sample app", root_path, id: "logo" %>
+    <nav>
+      <ul class="nav navbar-nav navbar-right">
+        <li><%= link_to "Home",    root_path %></li>
+        <li><%= link_to "Help",    help_path %></li>
+        <li><%= link_to "Log in", '#' %></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+#..............................
+
+[Log in] リンクの名前付きルートは第8章で作成するため、今の段階では’#’のままにしておきます。
+
+footerパーシャル _footer.html.erb にもリンクがあります。
+これらはAboutページとContactページへのリンクです (リスト 5.31)。
+
+##..............................
+リスト 5.31: footerパーシャルにリンクを追加する
+#...............................
+app/views/layouts/_footer.html.erb
+ <footer class="footer">
+  <small>
+    The <a href="https://railstutorial.jp/">Ruby on Rails Tutorial</a>
+    by <a href="http://www.michaelhartl.com/">Michael Hartl</a>
+  </small>
+  <nav>
+    <ul>
+      <li><%= link_to "About",   about_path %></li>
+      <li><%= link_to "Contact", contact_path %></li>
+      <li><a href="http://news.railstutorial.org/">News</a></li>
+    </ul>
+  </nav>
+</footer>
+#..............................
+
+これで、レイアウトに第3章で作成したすべての静的ページへのリンクができました。
+例えば /about の場合はAboutページ (図 5.10) に移動します。
+
+
+#.....................
+images/figures/about_page_styled_3rd_edition
+  ==> about_page_styled_3rd_edition.png
+図 5.10: /about で表示されるAboutページ
+#.....................
+
+演習
+リスト 5.29のようにhelfルーティングを作成し、レイアウトのリンクを更新してみてください。
+前回の演習と同様に、エディタのUndo機能を使ってこの演習で行った変更を元に戻してみてください。
+
+#-----------------------------------------------------
+[__ 5.3.4 ] リンクのテスト
+#-----------------------------------------------------
+
+レイアウト内のいくつかのリンクを埋めることができたので、これらのリンクが正しく動いているかどうかチェックするテストを書いてみましょう。
+ブラウザを立ち上げてルートURLにアクセスし、それぞれのリンクをクリックして確かめることもできますが、変更する度にこの作業を毎回繰り返していくのは大きな負担です。
+そこで、「統合テスト (Integration Test)」を使って一連の作業を自動化してみましょう。
+統合テストを使うと、アプリケーションの動作を端から端まで (end-to-end) シミュレートしてテストすることができます。
+まずは、site_layoutというテストのテンプレートを生成するところから始めてみます。
+
+$ rails generate integration_test site_layout
+      invoke  test_unit
+      create    test/integration/site_layout_test.rb
+このとき、Railsは渡されたファイル名の末尾に _test という文字列を追加することに注目してください。
+
+今回の目的は、アプリケーションのHTML構造を調べて、レイアウトの各リンクが正しく動くかどうかチェックすることです。
+つまり、
+
+ルートURL (Homeページ) にGETリクエストを送る.
+正しいページテンプレートが描画されているかどうか確かめる.
+Home、Help、About、Contactの各ページへのリンクが正しく動くか確かめる.
+Railsの統合テストでは、上のステップをコードに落とし込んでいくことになります (リスト 5.32)。
+具体的には、まずassert_templateメソッドを使って、Homeページが正しいビューを描画しているかどうか確かめます16。
+
+##..............................
+リスト 5.32: レイアウトのリンクに対するテスト green
+#...............................
+test/integration/site_layout_test.rb
+ require 'test_helper'
+
+class SiteLayoutTest < ActionDispatch::IntegrationTest
+
+  test "layout links" do
+    get root_path
+    assert_template 'static_pages/home'
+    assert_select "a[href=?]", root_path, count: 2
+    assert_select "a[href=?]", help_path
+    assert_select "a[href=?]", about_path
+    assert_select "a[href=?]", contact_path
+  end
+end
+#..............................
+
+リスト 5.32では、assert_selectメソッドの高度なオプションを使っています (このメソッド自体はリスト 3.24やリスト 5.21でも登場しました)。
+今回のケースでは、特定のリンクが存在するかどうかを、aタグとhref属性をオプションで指定して調べています。
+例えば、
+
+assert_select "a[href=?]", about_path
+上のコードでは、Railsは自動的にはてなマーク "?" をabout_pathに置換しています (このとき "about_path" 内に特殊記号があればエスケープ処理されます)。
+これにより、次のようなHTMLがあるかどうかをチェックすることができます。
+
+<a href="/about">...</a>
+一方で、ルートURLへのリンクは2つあることを思い出してください (1つはロゴに、もう1つはナビゲーションバーにあります)。
+このようなとき、
+
+assert_select "a[href=?]", root_path, count: 2
+といった風に書くことで、リスト 5.30で定義したHomeページのリンクの個数も調べることもできます
+
+assert_selectには色々な指定の仕方があります。
+その代表例をいくつか表 5.2で紹介します。
+assert_selectは柔軟でパワフルな機能で、ここでは紹介し切れないほど他にも多くのオプションがあります。
+しかし経験的には、このメソッドで複雑なテストはしない方が賢明です。
+今回のようなレイアウト内で頻繁に変更されるHTML要素 (リンクなど) をテストするぐらいに抑えておくとよいです。
+
+Code	マッチするHTML
+assert_select "div"	<div>foobar</div>
+assert_select "div", "foobar"	<div>foobar</div>
+assert_select "div.nav"	<div class="nav">foobar</div>
+assert_select "div#profile"	<div id="profile">foobar</div>
+assert_select "div[name=yo]"	<div name="yo">hey</div>
+assert_select "a[href=?]", ’/’, count: 1	<a href="/">foo</a>
+assert_select "a[href=?]", ’/’, text: "foo"	<a href="/">foo</a>
+表 5.2: assert_selectのいくつかの使用例
+リスト 5.32で追加した統合テストが通るかどうかは、次のようにRakeタスクを実行することで試すことができます。
+
+##..............................
+リスト 5.33: green
+#...............................
+$ rails test:integration
+#..............................
+
+統合テストが成功したら、今度はすべてのテストを流して greenするかどうか確かめてみてください。
+
+##..............................
+リスト 5.34: green
+#...............................
+$ rails test
+#..............................
+
+レイアウトのリンクをテストする統合テストが追加されたことで、リンクに間違った変更が加えられたらすぐに気付けるようになりました。
+
+演習
+footerパーシャルのabout_pathをcontact_pathに変更してみて、テストが正しくエラーを捕まえてくれるかどうか確認してみてください。
+リスト 5.35で示すように、Applicationヘルパーで使っているfull_titleヘルパーを、test環境でも使えるようにすると便利です。
+こうしておくと、リスト 5.36のようなコードを使って、正しいタイトルをテストすることができます。
+ただし、これは完璧なテストではありません。
+例えばベースタイトルに「Ruby on Rails Tutoial」といった誤字があったとしても、このテストでは発見することができないでしょう。
+この問題を解決するためには、full_titleヘルパーに対するテストを書く必要があります。
+そこで、Applicationヘルパーをテストするファイルを作成し、リスト 5.37のFILL_INの部分を適切なコードに置き換えてみてください。
+ヒント: リスト 5.37ではassert_equal <期待される値>, <実際の値>といった形で使っていましたが、内部では==演算子で期待される値と実際の値を比較し、正しいかどうかのテストをしています。
+##..............................
+リスト 5.35: test環境でもApplicationヘルパーを使えるようにする
+#...............................
+test/test_helper.rb
+ ENV['RAILS_ENV'] ||= 'test'
+.
+.
+.
+class ActiveSupport::TestCase
+  fixtures :all
+  include ApplicationHelper
+  .
+  .
+  .
+end
+#..............................
+
+##..............................
+リスト 5.36: test環境でfull_titleヘルパーを使う green
+#...............................
+test/integration/site_layout_test.rb
+ require 'test_helper'
+
+class SiteLayoutTest < ActionDispatch::IntegrationTest
+
+  test "layout links" do
+    get root_path
+    assert_template 'static_pages/home'
+    assert_select "a[href=?]", root_path, count: 2
+    assert_select "a[href=?]", help_path
+    assert_select "a[href=?]", about_path
+    assert_select "a[href=?]", contact_path
+    get contact_path
+    assert_select "title", full_title("Contact")
+  end
+end
+#..............................
+
+##..............................
+リスト 5.37: full_titleヘルパーの単体テスト
+#...............................
+test/helpers/application_helper_test.rb
+ require 'test_helper'
+
+class ApplicationHelperTest < ActionView::TestCase
+  test "full title helper" do
+    assert_equal full_title,         FILL_IN
+    assert_equal full_title("Help"), FILL_IN
+  end
+end
+#..............................
+
+
+#-----------------------------
+[_ 5.4 ] ユーザー登録: 最初のステップ
+#-----------------------------
+
+この節では、レイアウトとルーティングの取り組みにおける頂点として、ユーザー登録ページへのルーティングを作成します。
+そのために2番目のコントローラを作成することになります。
+これは、Webサイトでユーザー登録を行えるようにするための最初の重要な一歩となります。
+次の一歩であるユーザーのモデリングは第6章で行い、第7章でユーザー登録が完成します。
+
+
+#-----------------------------------------------------
+[__ 5.4.1 ] Usersコントローラ
+#-----------------------------------------------------
+
+3.2で、最初のコントローラであるStaticPagesコントローラを作成しました。
+今度は2番目のコントローラであるUsersコントローラを作成しましょう。
+以前のときと同様に、generateを実行して、現時点での要求である新規ユーザー用のユーザー登録ページ (スタブ) を持つ、最も簡単なコントローラを作成します。
+Railsで好まれているRESTアーキテクチャの規約に従い、新規ユーザー用のアクションをnewとします。
+したがって、generate controllerの引数にnewを渡して、自動的にアクションを作成してみましょう。
+変更の結果をリスト 5.38に示します。
+
+##..............................
+リスト 5.38: Usersコントローラの生成 (newアクションを追加)
+#...............................
+$ rails generate controller Users new
+      create  app/controllers/users_controller.rb
+       route  get 'users/new'
+      invoke  erb
+      create    app/views/users
+      create    app/views/users/new.html.erb
+      invoke  test_unit
+      create    test/controllers/users_controller_test.rb
+      invoke  helper
+      create    app/helpers/users_helper.rb
+      invoke    test_unit
+      invoke  assets
+      invoke    coffee
+      create      app/assets/javascripts/users.coffee
+      invoke    scss
+      create      app/assets/stylesheets/users.scss
+#..............................
+
+リスト 5.38により、newアクションを持つUsersコントローラ(リスト 5.39)と、スタブのユーザービューを作成します(リスト 5.40)。
+このとき、新しいUserページ用の小さなテスト (リスト 5.41) も生成されていて、この時点ではパスするはずです。
+
+##..............................
+リスト 5.39: newアクションを持つ最初のUsersコントローラ
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def new
+  end
+end
+#..............................
+
+##..............................
+リスト 5.40: Users用の最初のnewアクション
+#...............................
+app/views/users/new.html.erb
+ <h1>Users#new</h1>
+<p>Find me in app/views/users/new.html.erb</p>
+#..............................
+
+##..............................
+リスト 5.41: Userページ用の最初のテスト green
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  test "should get new" do
+    get users_new_url
+    assert_response :success
+  end
+end
+#..............................
+
+この時点では、テストは greenになっているはずです。
+
+##..............................
+リスト 5.42: green
+#...............................
+$ rails test
+#..............................
+
+演習
+表 5.1を参考にしながらリスト 5.41を変更し、users_new_urlではなくsignup_pathを使えるようにしてみてください。
+先ほどの変更を加えたことにより、テストが redになったことを確認してください。
+なお、この演習はテスト駆動開発 (コラム 3.3) で説明した red/green のリズムを作ることを目的としています。
+このテストは次の5.4.2で greenになるよう修正します。
+
+#-----------------------------------------------------
+[__ 5.4.2 ] ユーザー登録用URL
+#-----------------------------------------------------
+
+5.4.1のコードにより、新規ユーザー用の動作するページが/users/new にできました。
+ここで表 5.1を思い出していただきたいのですが、URLは/users/newではなく表のとおりに/signupにしたいと思います。
+リスト 5.27の例に従い、ユーザー登録URL用にget ’/signup’のルートを追加します (リスト 5.43)。
+
+##..............................
+リスト 5.43: ユーザー登録ページのルート red
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root 'static_pages#home'
+  get  '/help',    to: 'static_pages#help'
+  get  '/about',   to: 'static_pages#about'
+  get  '/contact', to: 'static_pages#contact'
+  get  '/signup',  to: 'users#new'
+end
+#..............................
+
+リスト 5.43の変更に合わせて、リスト 5.38で生成されたテストも修正していきましょう。
+修正した結果をリスト 5.44に示します。
+
+##..............................
+リスト 5.44: Usersコントローラのテストで名前付きルートを使うようにする green
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  test "should get new" do
+    get signup_path
+    assert_response :success
+  end
+end
+#..............................
+
+次に、新しく定義された名前付きルートを使って、Homeページのボタンに適切なリンクを追加します。
+他のルートと同様、get ’/signup’と記述したことでsignup_pathという名前付きルートができ、それをリスト 5.45で使います。
+なお、signupページへのテストは演習に回すことにします (5.3.2.1)。
+
+##..............................
+リスト 5.45: ボタンにユーザー登録ページへのリンクを追加する
+#...............................
+app/views/static_pages/home.html.erb
+ <div class="center jumbotron">
+  <h1>Welcome to the Sample App</h1>
+
+  <h2>
+    This is the home page for the
+    <a href="https://railstutorial.jp/">Ruby on Rails Tutorial</a>
+    sample application.
+  </h2>
+
+  <%= link_to "Sign up now!", signup_path, class: "btn btn-lg btn-primary" %>
+</div>
+
+<%= link_to image_tag("rails.png", alt: "Rails logo"),
+            'http://rubyonrails.org/' %>
+#..............................
+
+最後に、signupページ用のカスタムスタブ (stub) のビューを追加します (5.46)。
+
+##..............................
+リスト 5.46: 最初のユーザー登録ページ (スタブ)
+#...............................
+app/views/users/new.html.erb
+ <% provide(:title, 'Sign up') %>
+<h1>Sign up</h1>
+<p>This will be a signup page for new users.</p>
+#..............................
+
+これで、少なくともサインインのルートを追加するまでの間、リンクと名前付きルートが完成しました (第8章)。
+結果を図 5.11の新規ユーザーのページ (URI /signup) に示します。
+
+
+#.....................
+images/figures/new_signup_page_4th_edition
+  ==> new_signup_page_4th_edition.png
+図 5.11: 新しいユーザー登録ページ (/signup)
+#.....................
+
+演習
+もしまだ5.4.1.1の演習に取り掛かっていなければ、まずはリスト 5.41のように変更し、名前付きルートsignup_pathを使えるようにしてください。
+また、リスト 5.43で名前付きルートが使えるようになったので、現時点でテストが greenになっていることを確認してください。
+先ほどのテストが正しく動いていることを確認するため、signupルートの部分をコメントアウトし、テスト redになることを確認してください。
+確認できたら、コメントアウトを解除して greenの状態に戻してください。
+リスト 5.32の統合テストにsignupページにアクセスするコードを追加してください (getメソッドを使います)。
+コードを追加したら実際にテストを実行し、結果が正しいことを確認してください。
+ヒント: リスト 5.36で紹介したfull_titleヘルパーを使ってみてください。
+
+#-----------------------------
+[_ 5.5 ] 最後に
+#-----------------------------
+
+この章では、アプリケーションのレイアウトを形にし、ルーティングを洗練させました。
+本書では、以後サンプルアプリケーションを肉付けすることに専念します。
+最初に、ユーザー登録、サインイン、サインアウトできるユーザーを追加します。
+次に、マイクロポストを追加します。
+最後に、他のユーザーをフォローできるようにします。
+
+Gitを使っている方は、この時点でmasterブランチに変更をマージしてください。
+
+$ git add -A
+$ git commit -m "Finish layout and routes"
+$ git checkout master
+$ git merge filling-in-layout
+続いて、テストスイートを実行して greenになるか確認し、問題なければBitbucketにプッシュします。
+
+$ rails test
+$ git push
+最後に、Herokuへデプロイします。
+
+$ git push heroku
+デプロイが無事に終わると、本番環境でサンプルアプリケーションが動いているはずです (図 5.12)。
+
+
+#.....................
+images/figures/layout_production
+  ==> layout_production.png
+図 5.12: 本番環境で動くサンプルアプリケーション
+#.....................
+
+
+#-----------------------------------------------------
+[__ 5.5.1 ] 本章のまとめ
+#-----------------------------------------------------
+
+HTML5を使ってheaderやfooter、logoやbodyといったコンテンツのレイアウトを定義しました
+Railsのパーシャルは効率化のために使われ、別ファイルにマークアップを切り出すことができます
+CSSは、CSSクラスとidを使ってレイアウトやデザインを調整します
+Bootstrapフレームワークを使うと、いい感じのデザインを素早く実装できる
+SassとAsset Pipelineは、(開発効率のために切り分けられた) CSSの冗長な部分を圧縮し、本番環境に最適化した結果を出力する
+Railsのルーティングでは自由にルールを定義することができ、また、その際に名前付きルートも使えるようになる
+統合テストは、ブラウザによるページ間の遷移を効率的にシミュレートする
+
+NOTE: 1 
+Colm Tuiteの多大な貢献により、サンプルアプリケーションをBootstrap CSSのフレームワークに変換することができました。
+感謝します。
+ ↑
+
+NOTE: 2 
+Ruby on Railsチュートリアルのモックアップは、「Mockingbird」という素晴らしいモックアップ作成サービスで作られています。
+ ↑
+
+NOTE: 3 
+shimとshivという単語は、今回の用途ではどちらでも大丈夫です。
+shimの意味は「洗う機械、もしくは薄い物質を整理しフィットさせるためのモノ、あるいは服を削除すること」なので、意味合いとしては前者が正しいです。
+ちなみに後者は「ナイフ、もしくは武器として使う剃刀」という意味なので、おそらく原著者である Sjoerd Visscherのちょっとしたイタズラ心でしょう。
+ ↑
+
+NOTE: 4 
+CSSクラスは、Rubyのクラスとはまったく関係がありません。
+ ↑
+
+NOTE: 5 
+スペースを入れると見栄えが変わるかもしれませんが、3.4.1で触れたようにHTMLは重複する空白を無視するのでどちらでも大丈夫です。
+ ↑
+
+NOTE: 6 
+このロゴ画像は実はちょっと古いロゴです。
+ただ最新のロゴは拡張可能なベクター画像 (SVG) になっていて、やや扱いには手間がかかります。
+今回はサッと済ませてしまいたいので古いロゴ画像を使っています。
+ ↑
+
+NOTE: 7 
+既にお気づきだと思いますが、imgタグは<img>...</img>と書いても良いのですが、一般的には<img ... />と書きます。
+このような書式のタグを閉じタグと呼びます。
+ ↑
+
+NOTE: 8 
+画像の引用元とライセンス: https://www.flickr.com/photos/deborah_s_perspective/14144861329 on 2016-01-09. Copyright © 2009 by Deborah (改変不可の Creative Commons Attribution 2.0 Generic ライセンス) ↑
+
+NOTE: 9 
+これまでと同様に、Gemfileで指定した各gemのバージョンはgemfiles-4th-ed.railstutorial.orgと一致している必要があります。
+もしうまく次に進めない場合はチェックしてみてください。
+ ↑
+
+NOTE: 10 
+Asset PipelineではLessを使うこともできます。
+詳しくはless-rails-bootstrap gemを参照してください。
+ ↑
+
+NOTE: 11 
+もしこのステップが摩訶不思議に思えたら、次のように考えてみましょう。
+「私はただbootstrap-sassのREADMEファイルに従っているのだ」と。
+ ↑
+
+NOTE: 12 
+多くのRails開発者は、異なるビューの間で共通して使うパーシャル用のディレクトリとして、sharedディレクトリがよく使われます。
+著者は、複数のビューで共有するユーティリティパーシャルについてはsharedフォルダに保存し、文字どおり全ページ (サイトレイアウトの一部として) 共通のパーシャルについてはlayoutsディレクトリへ保存することを好んでいます (sharedディレクトリは第7章で作成します)。
+著者はこのように分割保存するのが論理的であると考えますが、sharedフォルダにすべて保存しても問題なく動作します。
+ ↑
+
+NOTE: 13 
+footerタグと.footerクラスを両方使っていることに疑問に思う方がいるかもしれません。
+その理由は、footerタグとする方が読み手にとって意味が明確であるのと、.footerクラスはBootstrapで使うためです。
+footerをdivに置き換えても動作は変わりません。
+ ↑
+
+NOTE: 14 
+このチュートリアル構成は、Michael Erasmusによる素晴らしいブログ記事「5分でわかるRails 3のAsset Pipeline (英語)」をもとにしています。
+詳細についてはRailsガイドの「アセットパイプライン」の項を参照してください。
+ ↑
+
+NOTE: 15 
+Sassはもう１つの全く新しい文法もサポートしています。
+この文法は冗長性が少ない (カッコが少ない) 新しい言語と言えるのですが、ただ既存のプロジェクトには若干不便であり、既にCSSに慣れ親しんだ人にとっては学習が面倒でもあります。
+ ↑
+
+NOTE: 16 
+何人かの開発者は「1つのテストに複数のアサーションを入れるべきではない」と強く主張するでしょう。
+この演習は不必要に複雑で、もし各テストの直前に共通のセットアップ用タスクがあれば、たしかに不要な負荷がかかることでしょう。
+しかし、よく書かれたテストは一貫したストーリーのようになり、人間にとって理解しやすいです。
+ストーリーを独立した場面ごとに分割されてしまうと、物語調ではなくなってしまいます。
+このことから、複数のアサーションを1つのテストにまとめるようにして、(minitestを通して) Rubyにどのセリフで間違ったのかを話させるようにしています。
+ ↑
+«前の章 次の章»

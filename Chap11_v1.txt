@@ -1,0 +1,1605 @@
+第11章
+アカウントの有効化
+現時点のアプリケーションは、新規登録したユーザーは初めからすべての機能にアクセスできるようになっています (第7章)。
+本章では、アカウントを有効化するステップを新規登録の途中に差し込むことで、本当にそのメールアドレスの持ち主なのかどうかを確認できるようにしてみます1。
+これを実現するための大まかな流れは、(1) 有効化トークンやダイジェストを関連付けておいた状態で、(2) 有効化トークンを含めたリンクをユーザーにメールで送信し、(3) ユーザーがそのリンクをクリックすると有効化できるようにする、というものです。
+なお、第12章でも似たような仕組みを使って、ユーザーがパスワードを忘れたときにパスワードを再設定できる仕組みを実装します。
+これらの機能ごとに新しいリソースを作成し、コントローラ/ルーティング/データベース移行の例について１つずつ学んでいきましょう。
+最後に、Railsの開発環境や本番環境からメールを実際に送信する方法についても学びます。
+
+アカウントを有効化する段取りは、ユーザーログイン (8.2)、特にユーザーの記憶 (9.1) と似ています。
+基本的な手順は次のようになります。
+2
+
+ユーザーの初期状態は「有効化されていない」(unactivated) にしておく。
+ユーザー登録が行われたときに、有効化トークンと、それに対応する有効化ダイジェストを生成する。
+有効化ダイジェストはデータベースに保存しておき、有効化トークンはメールアドレスと一緒に、ユーザーに送信する有効化用メールのリンクに仕込んでおく3。
+ユーザーがメールのリンクをクリックしたら、アプリケーションはメールアドレスをキーにしてユーザーを探し、データベース内に保存しておいた有効化ダイジェストと比較することでトークンを認証する。
+ユーザーを認証できたら、ユーザーのステータスを「有効化されていない」から「有効化済み」(activated) に変更する。
+都合の良いことに、今回実装するアカウント有効化やパスワード再設定の仕組みと、以前に実装したパスワードや記憶トークンの仕組みにはよく似た点が多いので、多くのアイデアを使い回すことができます (具体的にはUser.digestやUser.new_token、改造版のuser.authenticated?メソッドなど)。
+表 11.1に、それぞれの仕組みの似ている点をまとめてみました (第12章で紹介するメソッドも含めています)。
+
+検索キー	string	digest	authentication
+email	password	password_digest	authenticate(password)
+id	remember_token	remember_digest	authenticated?(:remember, token)
+email	activation_token	activation_digest	authenticated?(:activation, token)
+email	reset_token	reset_digest	authenticated?(:reset, token)
+表 11.1: ログイン/記憶トークン/アカウントの有効化/パスワードの再設定で似ている点
+なお、本章の11.1では、アカウント有効化に必要なリソースやデータモデルを作っていきます (11.1)。
+また11.2では、メイラー (mailer) を使ってアカウント有効化時のメール送信部分を作っていきます (11.2)。
+最後に、表 11.1で紹介した改良版authenticated?メソッドを使って、実際にアカウントを有効化する部分を実装していきます (11.3)。
+
+
+#-----------------------------
+[_ 11.1 ] AccountActivationsリソース
+#-----------------------------
+
+セッション機能 (8.1) を使って、アカウントの有効化という作業を「リソース」としてモデル化することにします。
+アカウントの有効化リソースはActive Recordのモデルとはこの際関係ないので、両者を関連付けることはしません。
+その代わりに、この作業に必要なデータ (有効化トークンや有効化ステータスなど) をUserモデルに追加することにします。
+
+なお、アカウント有効化もリソースとして扱いたいのですが、いつもとは少し使い方が異なる点に注意しておいてください。
+例えば、有効化用のリンクにアクセスして有効化のステータスを変更する部分では、RESTのルールに従うとPATCHリクエストとupdateアクションになるべきです (表 7.1)。
+しかし、有効化リンクはメールでユーザーに送られることを思い出してください。
+ユーザーがこのリンクをクリックすれば、それはブラウザで普通にクリックしたときと同じであり、その場合ブラウザから発行されるのは (updateアクションで使うPATCHリクエストではなく) GETリクエストになってしまいます。
+このため、ユーザーからのGETリクエストを受けるために、(本来であればupdateのところを) editアクションに変更して使っていきます。
+
+では、いつものように、Gitで新機能用のトピックブランチを作成しましょう。
+
+$ git checkout -b account-activation
+
+#-----------------------------------------------------
+[__ 11.1.1 ] AccountActivationsコントローラ
+#-----------------------------------------------------
+
+UsersリソースやSessionsリソースのときと同様に、AccountActivationsリソースを作るために、まずはAccountActivationsコントローラを生成してみましょう4。
+
+$ rails generate controller AccountActivations
+11.2.1で詳しく説明しますが、有効化のメールには次のURLを含めることになります。
+
+edit_account_activation_url(activation_token, ...)
+これは、editアクションへの名前付きルートが必要になるということです。
+そこでまずは、名前付きルートを扱えるようにするため、表 11.2に従って、ルーティングにアカウント有効化用のresources行を追加します (リスト 11.1)。
+
+##..............................
+リスト 11.1: アカウント有効化に使うリソース (editアクション) を追加する
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root   'static_pages#home'
+  get    '/help',    to: 'static_pages#help'
+  get    '/about',   to: 'static_pages#about'
+  get    '/contact', to: 'static_pages#contact'
+  get    '/signup',  to: 'users#new'
+  get    '/login',   to: 'sessions#new'
+  post   '/login',   to: 'sessions#create'
+  delete '/logout',  to: 'sessions#destroy'
+  resources :users
+  resources :account_activations, only: [:edit]
+end
+#..............................
+
+HTTPリクエスト	URL	Action	名前付きルート
+GET	/account_activation/<token>/edit	edit	edit_account_activation_url(token)
+表 11.2: アカウント有効化用のRESTfulなルーティング設定 (リスト 11.1)
+一旦ここまでにして、先にアカウント有効化用のデータモデルとメイラーを作っていきますが、それが終わったらここで作ったリソースをもとにeditアクションを定義していきます (11.3.2)。
+
+演習
+現時点でテストスイートを実行すると greenになることを確認してみましょう。
+表 11.2の名前付きルートでは、_pathではなく_urlを使うように記してあります。
+なぜでしょうか? 考えてみましょう。
+ヒント: 私達はこれからメールで名前付きルートを使います。
+
+#-----------------------------------------------------
+[__ 11.1.2 ] AccountActivationのデータモデル
+#-----------------------------------------------------
+
+冒頭で少し説明したように、有効化のメールには一意の有効化トークンが必要です。
+パッと思いつくのは、送信メールとデータベースのそれぞれに同じ文字列を置いておく方法です。
+しかし、この方法では万が一データベースの内容が漏れたとき、多大な被害に繋がってしまいます。
+例えば、攻撃者がデータベースへのアクセスに成功した場合、新しく登録されたユーザーアカウントの有効化トークンを盗み取り、本来のユーザーが使う前にそのトークンを使ってしまう (そしてそのユーザーとしてログインしてしまう) ケースが考えられます5。
+
+このような事態を防ぐために、パスワードの実装 (第6章) や記憶トークンの実装 (第9章) と同じように仮想的な属性を使ってハッシュ化した文字列をデータベースに保存するようにします。
+具体的には、次のように仮想属性の有効化トークンにアクセスし、
+
+user.activation_token
+このようなコードでユーザーを認証できるようになります。
+
+user.authenticated?(:activation, token)
+(これを行うにはリスト 9.6のauthenticated?メソッドを改良する必要があります。)
+
+続いて、activated属性を追加して論理値を取るようにします。
+これで、10.4.1で説明した自動生成の論理値メソッドと同じような感じで、ユーザーが有効であるかどうかをテストできるようになります。
+
+if user.activated? ...
+最後に、本チュートリアルで使うことはありませんが、ユーザーを有効にしたときの日時も念のために記録しておきます。
+変更後のデータモデルは図 11.1のようになります。
+
+user_model_account_activation
+図 11.1: Userモデルにユーザー有効化用の属性を追加する
+#.....................
+
+次のマイグレーションをコマンドラインで実行して図 11.1のデータモデルを追加すると、3つの属性が新しく追加されます。
+
+$ rails generate migration add_activation_to_users \
+> activation_digest:string activated:boolean activated_at:datetime
+(8.2.4でも指摘しましたが、上の２行目にある > は改行を示すためにシェルが自動的に挿入する文字です。
+手動で入力しないよう、注意してください。
+) 次に、admin属性 (リスト 10.54) のときと同様に、activated属性のデフォルトの論理値をfalseにしておきます (リスト 11.2)。
+
+##..............................
+リスト 11.2: アカウント有効化用の属性とインデックスを追加するマイグレーション
+#...............................
+db/migrate/[timestamp]_add_activation_to_users.rb
+ class AddActivationToUsers < ActiveRecord::Migration[5.0]
+  def change
+    add_column :users, :activation_digest, :string
+    add_column :users, :activated, :boolean, default: false
+    add_column :users, :activated_at, :datetime
+  end
+end
+#..............................
+
+いつものようにマイグレーションを実行します。
+
+$ rails db:migrate
+Activationトークンのコールバック
+ユーザーが新しい登録を完了するためには必ずアカウントの有効化が必要になるのですから、有効化トークンや有効化ダイジェストはユーザーオブジェクトが作成される前に作成しておく必要があります。
+これによく似た状況を6.2.5でも説明しました。
+メールアドレスをデータベースに保存する前に、メールアドレスを全部小文字に変換する必要があったのでした。
+あのときは、before_saveコールバックにdowncaseメソッドをバインドしました (リスト 6.32)。
+オブジェクトにbefore_saveコールバックを用意しておくと、オブジェクトが保存される直前、オブジェクトの作成時や更新時にそのコールバックが呼び出されます。
+しかし今回は、オブジェクトが作成されたときだけコールバックを呼び出したいのです。
+それ以外のときには呼び出したくないのです。
+そこでbefore_createコールバックが必要になります。
+このコールバックは次のように定義できます。
+
+before_create :create_activation_digest
+上のコードはメソッド参照と呼ばれるもので、こうするとRailsはcreate_activation_
+digestというメソッドを探し、ユーザーを作成する前に実行するようになります (リスト 6.32では、before_saveに明示的にブロックを渡していましたが、メソッド参照の方がオススメできます)。
+create_activation_digestメソッド自体はUserモデル内でしか使わないので、外部に公開する必要はありません。
+7.3.2のときと同じようにprivateキーワードを指定して、このメソッドをRuby流に隠蔽します。
+
+private
+
+  def create_activation_digest
+    # 有効化トークンとダイジェストを作成および代入する
+  end
+クラス内でprivateキーワードより下に記述したメソッドは自動的に非公開となります。
+これはコンソールですぐに確かめられます。
+
+$ rails console
+>> User.first.create_activation_digest
+NoMethodError: private method `create_activation_digest' called for #<User>
+今回before_createコールバックを使う目的は、トークンとそれに対応するダイジェストを割り当てるためです。
+実際の割り当ては次のように行います。
+
+self.activation_token  = User.new_token
+self.activation_digest = User.digest(activation_token)
+このコードでは、記憶トークンや記憶ダイジェストのために作ったメソッドを使いまわしています。
+リスト 9.3のrememberメソッドと比べてみましょう。
+
+# 永続セッションのためにユーザーをデータベースに記憶する
+def remember
+  self.remember_token = User.new_token
+  update_attribute(:remember_digest, User.digest(remember_token))
+end
+主な違いは、後者のupdate_attributeの使い方にあります。
+この違いは、記憶トークンやダイジェストは既にデータベースにいるユーザーのために作成されるのに対し、before_createコールバックの方はユーザーが作成される前に呼び出されることです。
+このコールバックがあることで、User.newで新しいユーザーが定義されると (リスト 7.19)、activation_token属性やactivation_digest属性が得られるようになります。
+後者のactivation_digest属性は既にデータベースのカラムとの関連付けができあがっている (図 11.1) ので、ユーザーが保存されるときに一緒に保存されます。
+
+上で説明したことをUserモデルに実装するとリスト 11.3のようになります。
+有効化トークンは本質的に仮のものでなければならないので、このモデルのattr_accessorにもう１つ追加しました。
+以前に実装したメールアドレスを小文字にするメソッドも (リスト 6.32)、メソッド参照に切り替えている点に気をつけてください。
+
+##..............................
+リスト 11.3: Userモデルにアカウント有効化のコードを追加する green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token, :activation_token
+  before_save   :downcase_email
+  before_create :create_activation_digest
+  validates :name,  presence: true, length: { maximum: 50 }
+  .
+  .
+  .
+  private
+
+    # メールアドレスをすべて小文字にする
+    def downcase_email
+      self.email = email.downcase
+    end
+
+    # 有効化トークンとダイジェストを作成および代入する
+    def create_activation_digest
+      self.activation_token  = User.new_token
+      self.activation_digest = User.digest(activation_token)
+    end
+end
+#..............................
+
+サンプルユーザーの生成とテスト
+先に進む前に、サンプルデータとfixtureも更新し、テスト時のサンプルとユーザーを事前に有効化しておきましょう (リスト 11.4とリスト 11.5)。
+なお、Time.zone.nowはRailsの組み込みヘルパーであり、サーバーのタイムゾーンに応じたタイムスタンプを返します。
+
+##..............................
+リスト 11.4: サンプルユーザーを最初から有効にしておく
+#...............................
+db/seeds.rb
+ User.create!(name:  "Example User",
+             email: "example@railstutorial.org",
+             password:              "foobar",
+             password_confirmation: "foobar",
+             admin:     true,
+             activated: true,
+             activated_at: Time.zone.now)
+
+99.times do |n|
+  name  = Faker::Name.name
+  email = "example-#{n+1}@railstutorial.org"
+  password = "password"
+  User.create!(name:  name,
+              email: email,
+              password:              password,
+              password_confirmation: password,
+              activated: true,
+              activated_at: Time.zone.now)
+end
+#..............................
+
+##..............................
+リスト 11.5: fixtureのユーザーを有効にしておく
+#...............................
+test/fixtures/users.yml
+ michael:
+  name: Michael Example
+  email: michael@example.com
+  password_digest: <%= User.digest('password') %>
+  admin: true
+  activated: true
+  activated_at: <%= Time.zone.now %>
+
+archer:
+  name: Sterling Archer
+  email: duchess@example.gov
+  password_digest: <%= User.digest('password') %>
+  activated: true
+  activated_at: <%= Time.zone.now %>
+
+lana:
+  name: Lana Kane
+  email: hands@example.gov
+  password_digest: <%= User.digest('password') %>
+  activated: true
+  activated_at: <%= Time.zone.now %>
+
+malory:
+  name: Malory Archer
+  email: boss@example.gov
+  password_digest: <%= User.digest('password') %>
+  activated: true
+  activated_at: <%= Time.zone.now %>
+
+<% 30.times do |n| %>
+user_<%= n %>:
+  name:  <%= "User #{n}" %>
+  email: <%= "user-#{n}@example.com" %>
+  password_digest: <%= User.digest('password') %>
+  activated: true
+  activated_at: <%= Time.zone.now %>
+<% end %>
+#..............................
+
+いつものようにデータベースを初期化して、サンプルデータを再度生成し直し、リスト 11.4の変更を反映します。
+
+$ rails db:migrate:reset
+$ rails db:seed
+演習
+本項での変更を加えた後、テストスイートが green のままになっていることを確認してみましょう。
+コンソールからUserクラスのインスタンスを生成し、そのオブジェクトからcreate_activation_digestメソッドを呼び出そうとすると (Privateメソッドなので) NoMethodErrorが発生することを確認してみましょう。
+また、そのUserオブジェクトからダイジェストの値も確認してみましょう。
+リスト 6.34で、メールアドレスの小文字化にはemail.downcase!という (代入せずに済む) メソッドがあることを知りました。
+このメソッドを使って、リスト 11.3のdowncase_emailメソッドを改良してみてください。
+また、うまく変更できれば、テストスイートは成功したままになっていることも確認してみてください。
+
+#-----------------------------
+[_ 11.2 ] アカウント有効化のメール送信
+#-----------------------------
+
+データのモデル化が終わったので、今度はアカウント有効化メールの送信に必要なコードを追加しましょう。
+このメソッドではAction Mailerライブラリを使ってUserのメイラーを追加します。
+このメイラーはUsersコントローラのcreateアクションで有効化リンクをメール送信するために使います。
+メイラーの構成はコントローラのアクションとよく似ており、メールのテンプレートをビューと同じ要領で定義できます。
+このテンプレートの中に有効化トークンとメールアドレス (= 有効にするアカウントのアドレス) のリンクを含め、使っていきます。
+
+
+#-----------------------------------------------------
+[__ 11.2.1 ] 送信メールのテンプレート
+#-----------------------------------------------------
+
+メイラーは、モデルやコントローラと同様にrails generateで生成できます (リスト 11.6)。
+
+##..............................
+リスト 11.6: Userメイラーの生成
+#...............................
+$ rails generate mailer UserMailer account_activation password_reset
+#..............................
+
+リスト 11.6を実行したことで、今回必要となるaccount_activationメソッドと、第12章で必要となるpassword_resetメソッドが生成されました。
+
+また、リスト 11.6は、生成したメイラーごとに、ビューのテンプレートが2つずつ生成されます。
+1つはテキストメール用のテンプレート、1つはHTMLメール用のテンプレートです。
+アカウント有効化に使うテンプレートを、リスト 11.7とリスト 11.8に示します。
+なお、パスワード再設定で使うテンプレートは第12章で使います。
+
+##..............................
+リスト 11.7: アカウント有効化メイラーのテキストビュー (自動生成)
+#...............................
+app/views/user_mailer/account_activation.text.erb
+ UserMailer#account_activation
+
+<%= @greeting %>, find me in app/views/user_mailer/account_activation.text.erb
+#..............................
+
+##..............................
+リスト 11.8: アカウント有効化メイラーのHTMLビュー (自動生成)
+#...............................
+app/views/user_mailer/account_activation.html.erb
+ <h1>UserMailer#account_activation</h1>
+
+<p>
+  <%= @greeting %>, find me in app/views/user_mailer/account_activation.html.erb
+</p>
+#..............................
+
+生成されたメイラーの動作を簡単に追ってみましょう (リスト 11.9とリスト 11.10)。
+リスト 11.9には、デフォルトのfromアドレス (アプリケーション全体で共通) があります。
+リスト 11.10の各メソッドには宛先メールアドレスもあります。
+リスト 11.9ではメールのフォーマットに対応するメイラーレイアウトも使われています。
+なお本チュートリアルの説明には直接関係ありませんが、生成されるHTMLメイラーのレイアウトやテキストメイラーのレイアウトはapp/views/layoutsで確認できます。
+生成されたコードにはインスタンス変数@greetingも含まれています。
+このインスタンス変数は、ちょうど普通のビューでコントローラのインスタンス変数を利用できるのと同じように、メイラービューで利用できます。
+
+##..............................
+リスト 11.9: 生成されたApplicationメイラー
+#...............................
+app/mailers/application_mailer.rb
+ class ApplicationMailer < ActionMailer::Base
+  default from: "from@example.com"
+  layout 'mailer'
+end
+#..............................
+
+##..............................
+リスト 11.10: 生成されたUserメイラー
+#...............................
+app/mailers/user_mailer.rb
+ class UserMailer < ApplicationMailer
+
+  # Subject can be set in your I18n file at config/locales/en.yml
+  # with the following lookup:
+  #
+  #   en.user_mailer.account_activation.subject
+  #
+  def account_activation
+    @greeting = "Hi"
+
+    mail to: "to@example.org"
+  end
+
+  # Subject can be set in your I18n file at config/locales/en.yml
+  # with the following lookup:
+  #
+  #   en.user_mailer.password_reset.subject
+  #
+  def password_reset
+    @greeting = "Hi"
+
+    mail to: "to@example.org"
+  end
+end
+#..............................
+
+最初に、生成されたテンプレートをカスタマイズして、実際に有効化メールで使えるようにします (リスト 11.11)。
+次に、ユーザーを含むインスタンス変数を作成してビューで使えるようにし、user.emailにメール送信します (リスト 11.12)。
+リスト 11.12では、mailにsubjectキーを引数として渡しています。
+この値は、メールの件名にあたります。
+
+##..............................
+リスト 11.11: fromアドレスのデフォルト値を更新したアプリケーションメイラー
+#...............................
+app/mailers/application_mailer.rb
+ class ApplicationMailer < ActionMailer::Base
+  default from: "noreply@example.com"
+  layout 'mailer'
+end
+#..............................
+
+##..............................
+リスト 11.12: アカウント有効化リンクをメール送信する
+#...............................
+app/mailers/user_mailer.rb
+ class UserMailer < ApplicationMailer
+
+  def account_activation(user)
+    @user = user
+    mail to: user.email, subject: "Account activation"
+  end
+
+  def password_reset
+    @greeting = "Hi"
+
+    mail to: "to@example.org"
+  end
+end
+#..............................
+
+テンプレートビューは、通常のビューと同様ERBで自由にカスタマイズできます。
+ここでは挨拶文にユーザー名を含め、カスタムの有効化リンクを追加します。
+この後、Railsサーバーでユーザーをメールアドレスで検索して有効化トークンを認証できるようにしたいので、リンクにはメールアドレスとトークンを両方含めておく必要があります。
+AccountActivationsリソースで有効化をモデル化したので、トークン自体はリスト 11.1で定義した名前付きルートの引数で使われます。
+
+edit_account_activation_url(@user.activation_token, ...)
+ここで思い出してみましょう。
+
+edit_user_url(user)
+上のメソッドは、次の形式のURLを生成します。
+
+http://www.example.com/users/1/edit
+これに対応するアカウント有効化リンクのベースURLは次のようになります。
+
+http://www.example.com/account_activations/q5lt38hQDc_959PVoo6b7A/edit
+上のURLの「q5lt38hQDc_959PVoo6b7A」という部分はnew_tokenメソッドで生成されたものです (リスト 9.2)。
+URLで使えるようにBase64でエンコードされています。
+これはちょうど/users/1/editの「1」のようなユーザーIDと同じ役割を果たします。
+このトークンは、特にAccountActivationsコントローラのeditアクションではparamsハッシュでparams[:id]として参照できます。
+
+クエリパラメータを使って、このURLにメールアドレスもうまく組み込んでみましょう。
+クエリパラメータとは、URLの末尾で疑問符「?」に続けてキーと値のペアを記述したものです6。
+
+account_activations/q5lt38hQDc_959PVoo6b7A/edit?email=foo%40example.com
+このとき、メールアドレスの「@」記号がURLでは「%40」となっている点に注目してください。
+これは「エスケープ」と呼ばれる手法で、通常URLでは扱えない文字を扱えるようにするために変換されています。
+Railsでクエリパラメータを設定するには、名前付きルートに対して次のようなハッシュを追加します。
+
+edit_account_activation_url(@user.activation_token, email: @user.email)
+このようにして名前付きルートでクエリパラメータを定義すると、Railsが特殊な文字を自動的にエスケープしてくれます。
+コントローラでparams[:email]からメールアドレスを取り出すときには、自動的にエスケープを解除してくれます。
+
+ここまでできれば、リスト 11.12で定義した@userインスタンス変数、editへの名前付きルート、ERBを組み合わせて、必要なリンクを作成できます (リスト 11.13とリスト 11.14)。
+リスト 11.14のHTMLテンプレートでは、正しいリンクを組立てるためにlink_toメソッドを使っていることにご注目ください。
+
+##..............................
+リスト 11.13: アカウント有効化のテキストビュー
+#...............................
+app/views/user_mailer/account_activation.text.erb
+ Hi <%= @user.name %>,
+
+Welcome to the Sample App! Click on the link below to activate your account:
+
+<%= edit_account_activation_url(@user.activation_token, email: @user.email) %>
+#..............................
+
+##..............................
+リスト 11.14: アカウント有効化のHTMLビュー
+#...............................
+app/views/user_mailer/account_activation.html.erb
+ <h1>Sample App</h1>
+
+<p>Hi <%= @user.name %>,</p>
+
+<p>
+Welcome to the Sample App! Click on the link below to activate your account:
+</p>
+
+<%= link_to "Activate", edit_account_activation_url(@user.activation_token,
+                                                    email: @user.email) %>
+#..............................
+
+演習
+コンソールを開き、CGIモジュールのescapeメソッド (リスト 11.15) でメールアドレスの文字列をエスケープできることを確認してみましょう。
+このメソッドで"Don’t panic!"をエスケープすると、どんな結果になりますか?
+##..............................
+リスト 11.15: CGI.escapeを使ってエスケープする
+#...............................
+>> CGI.escape('foo@example.com')
+=> "foo%40example.com"
+#..............................
+
+
+#-----------------------------------------------------
+[__ 11.2.2 ] 送信メールのプレビュー
+#-----------------------------------------------------
+
+リスト 11.13やリスト 11.14で定義したテンプレートの実際の表示を簡単に確認するために、メールプレビューという裏技を使ってみましょう。
+Railsでは、特殊なURLにアクセスするとメールのメッセージをその場でプレビューすることができます。
+メールを実際に送信しなくてもよいので大変便利です。
+これを利用するには、アプリケーションのdevelopment環境の設定に手を加える必要があります (リスト 11.16)。
+
+##..............................
+リスト 11.16: development環境のメール設定
+#...............................
+config/environments/development.rb
+ Rails.application.configure do
+  .
+  .
+  .
+  config.action_mailer.raise_delivery_errors = true
+  config.action_mailer.delivery_method = :test
+#..............................
+
+  host = 'example.com' # ここをコピペすると失敗します。
+自分の環境に合わせてください。
+  config.action_mailer.default_url_options = { host: host, protocol: 'https' }
+  .
+  .
+  .
+end
+リスト 11.16にあるホスト名 ’example.com’ の部分は、各自のdevelopment環境に合わせて変更してください。
+例えば、筆者はクラウドIDEを使っているので、このような設定になります。
+
+host = 'rails-tutorial-mhartl.c9users.io'     # クラウドIDE
+config.action_mailer.default_url_options = { host: host, protocol: 'https' }
+一方、もしローカル環境で開発している場合は、次のようになります。
+
+host = 'localhost:3000'                     # ローカル環境
+config.action_mailer.default_url_options = { host: host, protocol: 'http' }
+developmentサーバーを再起動してリスト 11.16の設定を読み込んだら、次はリスト 11.2で自動生成したUserメイラーのプレビューファイルの更新が必要です (リスト 11.17)。
+
+##..............................
+リスト 11.17: Userメイラープレビュー (自動生成)
+#...............................
+test/mailers/previews/user_mailer_preview.rb
+ # Preview all emails at http://localhost:3000/rails/mailers/user_mailer
+class UserMailerPreview < ActionMailer::Preview
+
+  # Preview this email at
+  # http://localhost:3000/rails/mailers/user_mailer/account_activation
+  def account_activation
+    UserMailer.account_activation
+  end
+
+  # Preview this email at
+  # http://localhost:3000/rails/mailers/user_mailer/password_reset
+  def password_reset
+    UserMailer.password_reset
+  end
+end
+#..............................
+
+リスト 11.12で定義したaccount_activationの引数には有効なUserオブジェクトを渡す必要があるため、リスト 11.17はこのままでは動きません。
+これを回避するために、user変数が開発用データベースの最初のユーザーになるように定義して、それをUserMailer.account_activationの引数として渡します (リスト 11.18)。
+このとき、リスト 11.18ではuser.activation_tokenの値にも代入している点にご注目ください。
+リスト 11.13やリスト 11.14のテンプレートでは、アカウント有効化のトークンが必要なので、代入は省略できません。
+なお、activation_tokenは仮の属性でしかないので (11.1)、データベースのユーザーはこの値を実際には持っていません。
+
+##..............................
+リスト 11.18: アカウント有効化のプレビューメソッド (完成)
+#...............................
+test/mailers/previews/user_mailer_preview.rb
+ # Preview all emails at http://localhost:3000/rails/mailers/user_mailer
+class UserMailerPreview < ActionMailer::Preview
+
+  # Preview this email at
+  # http://localhost:3000/rails/mailers/user_mailer/account_activation
+  def account_activation
+    user = User.first
+    user.activation_token = User.new_token
+    UserMailer.account_activation(user)
+  end
+
+  # Preview this email at
+  # http://localhost:3000/rails/mailers/user_mailer/password_reset
+  def password_reset
+    UserMailer.password_reset
+  end
+end
+#..............................
+
+リスト 11.18のプレビューコードを実装すると、指定のURLでアカウント有効化メールをプレビューできるようになります (クラウドIDEを使っている場合は、localhost:3000の部分を対応するベースURLに置き換えてください)。
+HTMLメールとテキストメールのプレビューを、図 11.2と図 11.3に示します。
+
+
+#.....................
+images/figures/account_activation_html_preview_4th_ed
+  ==> account_activation_html_preview_4th_ed.png
+図 11.2: アカウント有効化メールのプレビュー (HTML)
+#.....................
+
+
+#.....................
+images/figures/account_activation_text_preview_4th_ed
+  ==> account_activation_text_preview_4th_ed.png
+図 11.3: アカウント有効化メールのプレビュー (テキスト)
+#.....................
+
+演習
+Railsのプレビュー機能を使って、ブラウザから先ほどのメールを表示してみてください。
+「Date」の欄にはどんな内容が表示されているでしょうか?
+
+#-----------------------------------------------------
+[__ 11.2.3 ] 送信メールのテスト
+#-----------------------------------------------------
+
+最後に、このメールプレビューのテストも作成して、プレビューをダブルチェックできるようにします。
+便利なテスト例がRailsによって自動生成されているので(リスト 11.19)、これを利用すればテストの作成は割と簡単です。
+
+##..............................
+リスト 11.19: Userメイラーのテスト (Railsによる自動生成)
+#...............................
+test/mailers/user_mailer_test.rb
+ require 'test_helper'
+
+class UserMailerTest < ActionMailer::TestCase
+
+  test "account_activation" do
+    mail = UserMailer.account_activation
+    assert_equal "Account activation", mail.subject
+    assert_equal ["to@example.org"], mail.to
+    assert_equal ["from@example.com"], mail.from
+    assert_match "Hi", mail.body.encoded
+  end
+
+  test "password_reset" do
+    mail = UserMailer.password_reset
+    assert_equal "Password reset", mail.subject
+    assert_equal ["to@example.org"], mail.to
+    assert_equal ["from@example.com"], mail.from
+    assert_match "Hi", mail.body.encoded
+  end
+end
+#..............................
+
+リスト 11.19のテストでは、assert_matchという非常に強力なメソッドが使われています。
+これを使えば、正規表現で文字列をテストできます。
+
+assert_match 'foo', 'foobar'      # true
+assert_match 'baz', 'foobar'      # false
+assert_match /\w+/, 'foobar'      # true
+assert_match /\w+/, '$#!*+@'      # false
+リスト 11.20のテストでは、assert_matchメソッドを使って名前、有効化トークン、エスケープ済みメールアドレスがメール本文に含まれているかどうかをテストします。
+最後にもう１つ小技をお教えします。
+
+CGI.escape(user.email)
+11.2.1.1で紹介した上のメソッドを使うと、テスト用のユーザーのメールアドレスをエスケープすることもできます7。
+
+##..............................
+リスト 11.20: 現在のメールの実装をテストする red
+#...............................
+test/mailers/user_mailer_test.rb
+ require 'test_helper'
+
+class UserMailerTest < ActionMailer::TestCase
+
+  test "account_activation" do
+    user = users(:michael)
+    user.activation_token = User.new_token
+    mail = UserMailer.account_activation(user)
+    assert_equal "Account activation", mail.subject
+    assert_equal [user.email], mail.to
+    assert_equal ["noreply@example.com"], mail.from
+    assert_match user.name,               mail.body.encoded
+    assert_match user.activation_token,   mail.body.encoded
+    assert_match CGI.escape(user.email),  mail.body.encoded
+  end
+end
+#..............................
+
+リスト 11.20のテストコードでは、fixtureユーザーに有効化トークンを追加している点にご注目ください。
+追加しない場合は空白になります。
+なお、リスト 11.20では生成されたパスワード設定のテストも削除していますが、 12.2.2のときにこの箇所は元に戻します。
+
+このテストがパスするには、テストファイル内のドメイン名を正しく設定する必要があります (リスト 11.20)。
+
+##..............................
+リスト 11.21: テストのドメインホストを設定する
+#...............................
+config/environments/test.rb
+ Rails.application.configure do
+  .
+  .
+  .
+  config.action_mailer.delivery_method = :test
+  config.action_mailer.default_url_options = { host: 'example.com' }
+  .
+  .
+  .
+end
+#..............................
+
+上のコードを使うと、テストは greenになるはずです。
+
+##..............................
+リスト 11.22: green
+#...............................
+$ rails test:mailers
+#..............................
+
+演習
+この時点で、テストスイートが greenになっていることを確認してみましょう。
+リスト 11.20で使ったCGI.escapeの部分を削除すると、テストが redに変わることを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 11.2.4 ] ユーザーのcreateアクションを更新
+#-----------------------------------------------------
+
+あとはユーザー登録を行うcreateアクションに数行追加するだけで、メイラーをアプリケーションで実際に使うことができます (リスト 11.23)。
+リスト 11.23では、登録時のリダイレクトの挙動が変更されている点にご注意ください。
+変更前は、ユーザーのプロフィールページ (7.4) にリダイレクトしていましたが、アカウント有効化を実装するうえでは無意味な動作なので、 リダイレクト先をルートURLに変更してあります。
+
+##..............................
+リスト 11.23: ユーザー登録にアカウント有効化を追加する red
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      UserMailer.account_activation(@user).deliver_now
+      flash[:info] = "Please check your email to activate your account."
+      redirect_to root_url
+    else
+      render 'new'
+    end
+  end
+  .
+  .
+  .
+end
+#..............................
+
+リスト 11.23ではリダイレクト先をプロフィールページからルートURLに変更し、かつユーザーは以前のようにログインしないようになっています。
+したがって、アプリケーションの動作が仮に正しくても、現在のテストスイートは redになります。
+そこで、失敗が発生するテストの行をひとまずコメントアウトしておきます (リスト 11.24)。
+コメントアウトした部分は、11.3.3でアカウント有効化のテストをパスさせるときに元に戻します。
+
+##..............................
+リスト 11.24: 失敗するテストを一時的にコメントアウトする green
+#...............................
+test/integration/users_signup_test.rb
+ require 'test_helper'
+
+class UsersSignupTest < ActionDispatch::IntegrationTest
+
+  test "invalid signup information" do
+    get signup_path
+    assert_no_difference 'User.count' do
+      post users_path, params: { user: { name:  "",
+                                         email: "user@invalid",
+                                         password:              "foo",
+                                         password_confirmation: "bar" } }
+    end
+    assert_template 'users/new'
+    assert_select 'div#error_explanation'
+    assert_select 'div.field_with_errors'
+  end
+
+  test "valid signup information" do
+    get signup_path
+    assert_difference 'User.count', 1 do
+      post users_path, params: { user: { name:  "Example User",
+                                         email: "user@example.com",
+                                         password:              "password",
+                                         password_confirmation: "password" } }
+    end
+    follow_redirect!
+    # assert_template 'users/show'
+    # assert is_logged_in?
+  end
+end
+#..............................
+
+この状態で実際に新規ユーザーとして登録してみると、リダイレクトされて図 11.4のようになり、リスト 11.25のようなメールが生成されます。
+ただし、実際にメールが生成されるわけではないのでご注意ください。
+ここに引用したのはサーバーログに出力されたメールです (メールが見えるまで多少スクロールが必要でしょう)。
+production環境で実際にメール送信する方法については11.4で説明します。
+
+##..............................
+リスト 11.25: サーバーログに表示されたアカウント有効化メールの例
+#...............................
+UserMailer#account_activation: processed outbound mail in 292.4ms
+Sent mail to michael@michaelhartl.com (47.3ms)
+Date: Mon, 06 Jun 2016 20:17:41 +0000
+From: noreply@example.com
+To: michael@michaelhartl.com
+Message-ID: <f2c9222494c7178e@mhartl-rails-tutorial-3045526.mail>
+Subject: Account activation
+Mime-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="--==_mimepart_5755da6513e89_f2c9222494c71639";
+ charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+
+----==_mimepart_5755da6513e89_f2c9222494c71639
+Content-Type: text/plain;
+ charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+Hi Michael Hartl,
+
+Welcome to the Sample App! Click on the link below to activate your account:
+
+https://rails-tutorial-mhartl.c9users.io/account_activations/
+-L9kBsbIjmrqpJGB0TUKcA/edit?email=michael%40michaelhartl.com
+
+----==_mimepart_5755da6513e89_f2c9222494c71639
+Content-Type: text/html;
+ charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <style>
+      /* Email styles need to be inline */
+    </style>
+  </head>
+
+  <body>
+    <h1>Sample App</h1>
+
+<p>Hi Michael Hartl,</p>
+
+<p>
+Welcome to the Sample App! Click on the link below to activate your account:
+</p>
+
+<a href="https://rails-tutorial-mhartl.c9users.io/account_activations/
+-L9kBsbIjmrqpJGB0TUKcA/edit?email=michael%40michaelhartl.com">Activate</a>
+  </body>
+</html>
+
+----==_mimepart_5755da6513e89_f2c9222494c71639--
+#..............................
+
+
+#.....................
+images/figures/redirected_not_activated
+  ==> redirected_not_activated.png
+図 11.4: 登録後リダイレクトしたホームページにアカウント有効化確認のメッセージが表示される
+#.....................
+
+演習
+新しいユーザーを登録したとき、リダイレクト先が適切なURLに変わったことを確認してみましょう。
+その後、Railsサーバーのログから送信メールの内容を確認してみてください。
+有効化トークンの値はどうなっていますか?
+コンソールを開き、データベース上にユーザーが作成されたことを確認してみましょう。
+また、このユーザーはデータベース上にはいますが、有効化のステータスがfalseのままになっていることを確認してください。
+
+#-----------------------------
+[_ 11.3 ] アカウントを有効化する
+#-----------------------------
+
+リスト 11.25のとおりにメールが生成できたら、今度はAccountActivationsコントローラのeditアクションを書いていきましょう。
+また、アクションへのテストを書き、しっかりとテストできていることが確認できたら、AccountActivationsコントローラからUserモデルにコードを移していく作業 (リファクタリング) にも取り掛かっていきます。
+
+
+#-----------------------------------------------------
+[__ 11.3.1 ] authenticated?メソッドの抽象化
+#-----------------------------------------------------
+
+ここで、有効化トークンとメールをそれぞれparams[:id]とparams[:email]で参照できる (11.2.1) ことを思い出してみましょう。
+パスワードのモデル (リスト 8.7) と記憶トークン (リスト 9.9) で学んだことを元に、次のようなコードでユーザーを検索して認証することにします。
+
+user = User.find_by(email: params[:email])
+if user && user.authenticated?(:activation, params[:id])
+(この後、上の式に論理値を１つ追加します。
+何が追加されるか考えてみましょう。)
+
+上のコードで使っているauthenticated?メソッドは、アカウント有効化のダイジェストと、渡されたトークンが一致するかどうかをチェックします。
+ただし、このメソッドは記憶トークン (リスト 9.6) 用なので今は正常に動作しません。
+
+# トークンがダイジェストと一致したらtrueを返す
+def authenticated?(remember_token)
+  return false if remember_digest.nil?
+  BCrypt::Password.new(remember_digest).is_password?(remember_token)
+end
+remember_digestはUserモデルの属性なので、モデル内では次のように書き換えることができます。
+
+self.remember_digest
+今回は、上のコードのrememberの部分をどうにかして変数として扱いたいのです。
+つまり、次のコード例のように、状況に応じて呼び出すメソッドを切り替えたいのです。
+
+self.FOOBAR_digest
+これから実装するauthenticated?メソッドでは、受け取ったパラメータに応じて呼び出すメソッドを切り替える手法を使います。
+
+この一見不思議な手法は「メタプログラミング」と呼ばれています。
+メタプログラミングを一言で言うと「プログラムでプログラムを作成する」ことです。
+メタプログラミングはRubyが有するきわめて強力な機能であり、Railsの一見魔法のような機能 (「黒魔術」とも呼ばれます) の多くは、Rubyのメタプログラミングによって実現されています。
+ここで重要なのは、sendメソッドの強力きわまる機能です。
+このメソッドは、渡されたオブジェクトに「メッセージを送る」ことによって、呼び出すメソッドを動的に決めることができます。
+例を見てみましょう。
+Railsコンソールを開き、Rubyのオブジェクトに対してsendメソッドを実行し、配列の長さを得るとします。
+
+$ rails console
+>> a = [1, 2, 3]
+>> a.length
+=> 3
+>> a.send(:length)
+=> 3
+>> a.send("length")
+=> 3
+このときsendを通して渡したシンボル:lengthや文字列"length"は、いずれもlengthメソッドと同じ結果になりました。
+つまり、どちらもオブジェクトにlengthメソッドを渡しているため、等価なのです。
+もう１つ例をお見せします。
+データベースの最初のユーザーが持つactivation_digest属性にアクセスする例です。
+
+>> user = User.first
+>> user.activation_digest
+=> "$2a$10$4e6TFzEJAVNyjLv8Q5u22ensMt28qEkx0roaZvtRcp6UZKRM6N9Ae"
+>> user.send(:activation_digest)
+=> "$2a$10$4e6TFzEJAVNyjLv8Q5u22ensMt28qEkx0roaZvtRcp6UZKRM6N9Ae"
+>> user.send("activation_digest")
+=> "$2a$10$4e6TFzEJAVNyjLv8Q5u22ensMt28qEkx0roaZvtRcp6UZKRM6N9Ae"
+>> attribute = :activation
+>> user.send("#{attribute}_digest")
+=> "$2a$10$4e6TFzEJAVNyjLv8Q5u22ensMt28qEkx0roaZvtRcp6UZKRM6N9Ae"
+最後の例では、シンボル:activationと等しいattribute変数を定義し、文字列の式展開 (interpolation) を使って引数を正しく組み立ててから、sendに渡しています。
+文字列’activation’でも同じことができますが、Rubyではシンボルを使う方が一般的です。
+
+"#{attribute}_digest"
+シンボルと文字列どちらを使った場合でも、上のコードは次のように文字列に変換されます。
+
+"activation_digest"
+これは、7.4.2でシンボルが式展開されて文字列になったのと同じ仕組みです。
+
+sendメソッドの動作原理がわかったので、この仕組みを利用してauthenticated?メソッドを書き換えてみましょう。
+
+def authenticated?(remember_token)
+  digest = self.send("remember_digest")
+  return false if digest.nil?
+  BCrypt::Password.new(digest).is_password?(remember_token)
+end
+上のコードの各引数を一般化し、文字列の式展開も利用すると、次のようなコードにできます。
+
+def authenticated?(attribute, token)
+  digest = self.send("#{attribute}_digest")
+  return false if digest.nil?
+  BCrypt::Password.new(digest).is_password?(token)
+end
+他の認証でも使えるように、上では2番目の引数tokenの名前を変更して一般化している点に注意してください。
+また、このコードはモデル内にあるのでselfは省略することもできます。
+最終的にRubyらしく書かれたコードは、次のようになります。
+
+def authenticated?(attribute, token)
+  digest = send("#{attribute}_digest")
+  return false if digest.nil?
+  BCrypt::Password.new(digest).is_password?(token)
+end
+ここまでできれば、次のように呼び出すことでauthenticated?の従来の振舞いを再現できます。
+
+user.authenticated?(:remember, remember_token)
+以上の説明を実際のUserモデルに適用した、抽象化したauthenticated?メソッドをリスト 11.26に示します。
+
+##..............................
+リスト 11.26: 抽象化されたauthenticated?メソッド red
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # トークンがダイジェストと一致したらtrueを返す
+  def authenticated?(attribute, token)
+    digest = send("#{attribute}_digest")
+    return false if digest.nil?
+    BCrypt::Password.new(digest).is_password?(token)
+  end
+  .
+  .
+  .
+end
+#..............................
+
+リスト 11.26のキャプションに記したとおり、この時点ではテストスイートは redになります。
+
+##..............................
+リスト 11.27: red
+#...............................
+$ rails test
+#..............................
+
+テストが失敗する理由は、current_userメソッド (リスト 9.9) とnilダイジェストのテスト (リスト 9.17) の両方で、authenticated?が古いままになっており、引数も2つではなくまだ1つのままだからです。
+これを解消するため、両者を更新して、新しい一般的なメソッドを使うようにします (リスト 11.28とリスト 11.29)。
+
+##..............................
+リスト 11.28: current_user内の抽象化したauthenticated?メソッド red
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+  .
+  .
+  .
+  # 現在ログイン中のユーザーを返す (いる場合)
+  def current_user
+    if (user_id = session[:user_id])
+      @current_user ||= User.find_by(id: user_id)
+    elsif (user_id = cookies.signed[:user_id])
+      user = User.find_by(id: user_id)
+      if user && user.authenticated?(:remember, cookies[:remember_token])
+        log_in user
+        @current_user = user
+      end
+    end
+  end
+  .
+  .
+  .
+end
+#..............................
+
+##..............................
+リスト 11.29: Userテスト内の抽象化したauthenticated?メソッド green
+#...............................
+test/models/user_test.rb
+ require 'test_helper'
+
+class UserTest < ActiveSupport::TestCase
+
+  def setup
+    @user = User.new(name: "Example User", email: "user@example.com",
+                     password: "foobar", password_confirmation: "foobar")
+  end
+  .
+  .
+  .
+  test "authenticated? should return false for a user with nil digest" do
+    assert_not @user.authenticated?(:remember, '')
+  end
+end
+#..............................
+
+上のような変更を加えると、テストは greenに変わります。
+
+##..............................
+リスト 11.30: green
+#...............................
+$ rails test
+#..............................
+
+このようなリファクタリングを施すとエラーが発生しやすくなるので、しっかりしたテストスイートが不可欠です。
+9.1.2や9.3であえてトラブルを発生させてみたのは、よいテストを書く動機付けになるかなと考えたからです。
+
+演習
+コンソール内で新しいユーザーを作成してみてください。
+新しいユーザーの記憶トークンと有効化トークンはどのような値になっているでしょうか? また、各トークンに対応するダイジェストの値はどうなっているでしょうか?
+リスト 11.26で抽象化したauthenticated?メソッドを使って、先ほどの各トークン/ダイジェストの組み合わせで認証が成功することを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 11.3.2 ] editアクションで有効化
+#-----------------------------------------------------
+
+authenticated?がリスト 11.26のようになったことで、やっとeditアクションを書く準備ができました。
+このアクションは、paramsハッシュで渡されたメールアドレスに対応するユーザーを認証します。
+ユーザーが有効であることを確認する中核は、次の部分になります。
+
+if user && !user.activated? && user.authenticated?(:activation, params[:id])
+!user.activated?という記述にご注目ください。
+先ほど「１つ論理値を追加します」と言ったのはここで利用したいからです。
+このコードは、既に有効になっているユーザーを誤って再度有効化しないために必要です。
+正当であろうとなかろうと、有効化が行われるとユーザーはログイン状態になります。
+もしこのコードがなければ、攻撃者がユーザーの有効化リンクを後から盗みだしてクリックするだけで、本当のユーザーとしてログインできてしまいます。
+そうした攻撃を防ぐためにこのコードは非常に重要です。
+
+上の論理値に基いてユーザーを認証するには、ユーザーを認証してからactivated_atタイムスタンプを更新する必要があります8。
+
+user.update_attribute(:activated,    true)
+user.update_attribute(:activated_at, Time.zone.now)
+上のコードをeditアクション (リスト 11.31) で使います。
+リスト 11.31では有効化トークンが無効だった場合の処理も行われている点にご注目ください。
+トークンが無効になるようなことは実際にはめったにありませんが、もしそうなった場合はルートURLにリダイレクトされる仕組みです。
+
+##..............................
+リスト 11.31: アカウントを有効化するeditアクション
+#...............................
+app/controllers/account_activations_controller.rb
+ class AccountActivationsController < ApplicationController
+
+  def edit
+    user = User.find_by(email: params[:email])
+    if user && !user.activated? && user.authenticated?(:activation, params[:id])
+      user.update_attribute(:activated,    true)
+      user.update_attribute(:activated_at, Time.zone.now)
+      log_in user
+      flash[:success] = "Account activated!"
+      redirect_to user
+    else
+      flash[:danger] = "Invalid activation link"
+      redirect_to root_url
+    end
+  end
+end
+#..............................
+
+リスト 11.31のコードを使うと、リスト 11.25にあるURLを貼り付けてユーザーを有効化できます。
+著者のシステム上では、次のURLをブラウザで開くと、
+
+https://rails-tutorial-mhartl.c9users.io/account_activations/
+fFb_F94mgQtmlSvRFGsITw/edit?email=michael%40michaelhartl.com
+図 11.5のようになりました。
+
+
+#.....................
+images/figures/activated_user_4th_ed
+  ==> activated_user_4th_ed.png
+図 11.5: 有効化が成功した場合に表示されるプロフィールページ
+#.....................
+
+もちろん、この時点ではユーザーのログイン方法を変更していないので、ユーザーの有効化にはまだ何の意味もありません。
+ユーザーの有効化が役に立つためには、ユーザーが有効である場合にのみログインできるようにログイン方法を変更する必要があります。
+リスト 11.32に示したように、これを行うにはuser.activated?がtrueの場合にのみログインを許可し、そうでない場合はルートURLにリダイレクトしてwarningで警告を表示します (図 11.6)。
+
+##..............................
+リスト 11.32: 有効でないユーザーがログインすることのないようにする
+#...............................
+app/controllers/sessions_controller.rb
+ class SessionsController < ApplicationController
+
+  def new
+  end
+
+  def create
+    user = User.find_by(email: params[:session][:email].downcase)
+    if user && user.authenticate(params[:session][:password])
+      if user.activated?
+        log_in user
+        params[:session][:remember_me] == '1' ? remember(user) : forget(user)
+        redirect_back_or user
+      else
+        message  = "Account not activated. "
+        message += "Check your email for the activation link."
+        flash[:warning] = message
+        redirect_to root_url
+      end
+    else
+      flash.now[:danger] = 'Invalid email/password combination'
+      render 'new'
+    end
+  end
+
+  def destroy
+    log_out if logged_in?
+    redirect_to root_url
+  end
+end
+#..............................
+
+
+#.....................
+images/figures/not_activated_warning
+  ==> not_activated_warning.png
+図 11.6: 有効になっていないユーザーに表示される警告メッセージ
+#.....................
+
+これで、ユーザー有効化機能のおおまかな部分については実装できました (改良すべき点として、有効化されていないユーザーが表示されないようにする必要もあるのですが、これは11.3.3.1の課題に回すことにします)。
+次の11.3.3でテストをもう少し追加し、リファクタリングを少々施せば完了です。
+
+演習
+コンソールから、11.2.4で生成したメールに含まれているURLを調べてみてください。
+URL内のどこに有効化トークンが含まれているでしょうか?
+先ほど見つけたURLをブラウザに貼り付けて、そのユーザーの認証に成功し、有効化できることを確認してみましょう。
+また、有効化ステータスがtrueになっていることをコンソールから確認してみてください。
+
+#-----------------------------------------------------
+[__ 11.3.3 ] 有効化のテストとリファクタリング
+#-----------------------------------------------------
+
+この項では、アカウント有効化の統合テストを追加します。
+正しい情報でユーザー登録を行った場合のテスト (リスト 7.4.4) は既にあるので、7.33で書いたテストに若干手を加えることにします。
+追加する行数はそこそこ多いのですが、ほとんどがこれまで学んできたコードと同じなので、そこまで心配する必要はありません。
+
+まずはリスト 11.33のテストから書いていきます。
+特にリスト 11.33でハイライトした行は見落とされがちなので、慎重にコードを変更していきましょう。
+
+##..............................
+リスト 11.33: ユーザー登録のテストにアカウント有効化を追加する green
+#...............................
+test/integration/users_signup_test.rb
+ require 'test_helper'
+
+class UsersSignupTest < ActionDispatch::IntegrationTest
+
+  def setup
+    ActionMailer::Base.deliveries.clear
+  end
+
+  test "invalid signup information" do
+    get signup_path
+    assert_no_difference 'User.count' do
+      post users_path, params: { user: { name:  "",
+                                         email: "user@invalid",
+                                         password:              "foo",
+                                         password_confirmation: "bar" } }
+    end
+    assert_template 'users/new'
+    assert_select 'div#error_explanation'
+    assert_select 'div.field_with_errors'
+  end
+    
+  test "valid signup information with account activation" do
+    get signup_path
+    assert_difference 'User.count', 1 do
+      post users_path, params: { user: { name:  "Example User",
+                                         email: "user@example.com",
+                                         password:              "password",
+                                         password_confirmation: "password" } }
+    end
+    assert_equal 1, ActionMailer::Base.deliveries.size
+    user = assigns(:user)
+    assert_not user.activated?
+    # 有効化していない状態でログインしてみる
+    log_in_as(user)
+    assert_not is_logged_in?
+    # 有効化トークンが不正な場合
+    get edit_account_activation_path("invalid token", email: user.email)
+    assert_not is_logged_in?
+    # トークンは正しいがメールアドレスが無効な場合
+    get edit_account_activation_path(user.activation_token, email: 'wrong')
+    assert_not is_logged_in?
+    # 有効化トークンが正しい場合
+    get edit_account_activation_path(user.activation_token, email: user.email)
+    assert user.reload.activated?
+    follow_redirect!
+    assert_template 'users/show'
+    assert is_logged_in?
+  end
+end
+#..............................
+
+リスト 11.33のコードは分量が多いように見えますが、本当に重要な部分は次の1行です。
+
+assert_equal 1, ActionMailer::Base.deliveries.size
+上のコードは、配信されたメッセージがきっかり1つであるかどうかを確認します。
+配列deliveriesは変数なので、setupメソッドでこれを初期化しておかないと、並行して行われる他のテストでメールが配信されたときにエラーが発生してしまいます (第12章でも似たようなケースを扱います)。
+ちなみにリスト 11.33のassignsメソッドは、初めてみた方もいるかもしれません。
+第9章の演習 (9.3.1.1) で説明したのですが、このassignsメソッドを使うと対応するアクション内のインスタンス変数にアクセスできるようになります。
+例えば、Usersコントローラのcreateアクションでは@userというインスタンス変数が定義されていますが (リスト 11.23)、テストでassigns(:user)と書くとこのインスタンス変数にアクセスできるようになる、といった具合です。
+最後に、リスト 11.24でコメントアウトしておいた行を、リスト 11.33で元に戻していることにご注意ください。
+
+これでテストスイートは greenになるはずです。
+
+##..............................
+リスト 11.34: green
+#...............................
+$ rails test
+#..............................
+
+リスト 11.33のテストができたので、ユーザー操作の一部をコントローラからモデルに移動するというささやかなリファクタリングを行う準備ができました。
+ここでは特に、activateメソッドを作成してユーザーの有効化属性を更新し、send_activation_emailメソッドを作成して有効化メールを送信します。
+この新しいメソッドをリスト 11.35に示します。
+また、リファクタリングされたアプリケーションコードをリスト 11.36とリスト 11.37に示します。
+
+##..............................
+リスト 11.35: Userモデルにユーザー有効化メソッドを追加する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # アカウントを有効にする
+  def activate
+    update_attribute(:activated,    true)
+    update_attribute(:activated_at, Time.zone.now)
+  end
+
+  # 有効化用のメールを送信する
+  def send_activation_email
+    UserMailer.account_activation(self).deliver_now
+  end
+
+  private
+    .
+    .
+    .
+end
+#..............................
+
+##..............................
+リスト 11.36: ユーザーモデルオブジェクトからメールを送信する
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      @user.send_activation_email
+      flash[:info] = "Please check your email to activate your account."
+      redirect_to root_url
+    else
+      render 'new'
+    end
+  end
+  .
+  .
+  .
+end
+#..............................
+
+##..............................
+リスト 11.37: ユーザーモデルオブジェクト経由でアカウントを有効化する
+#...............................
+app/controllers/account_activations_controller.rb
+ class AccountActivationsController < ApplicationController
+
+  def edit
+    user = User.find_by(email: params[:email])
+    if user && !user.activated? && user.authenticated?(:activation, params[:id])
+      user.activate
+      log_in user
+      flash[:success] = "Account activated!"
+      redirect_to user
+    else
+      flash[:danger] = "Invalid activation link"
+      redirect_to root_url
+    end
+  end
+end
+#..............................
+
+リスト 11.35ではuser.という記法を使っていない点にご注目ください。
+Userモデルにはそのような変数はないので、これがあるとエラーになります。
+
+-user.update_attribute(:activated,    true)
+-user.update_attribute(:activated_at, Time.zone.now)
++update_attribute(:activated,    true)
++update_attribute(:activated_at, Time.zone.now)
+(userをselfに切り替えるという手もあるのですが、selfはモデル内では必須ではないと6.2.5で解説したことを思い出しましょう。
+) Userメイラー内の呼び出しでは、@userがselfに変更されている点にもご注目ください。
+
+-UserMailer.account_activation(@user).deliver_now
++UserMailer.account_activation(self).deliver_now
+どんなに簡単なリファクタリングであっても、この手の変更はつい忘れてしまうものです。
+テストをきちんと書いておけば、この種の見落としを検出できます。
+以上でテストスイートは greenになるはずです。
+
+##..............................
+リスト 11.38: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 11.35にあるactivateメソッドはupdate_attributeを２回呼び出していますが、これは各行で１回ずつデータベースへ問い合わせしていることになります。
+リスト 11.39に記したテンプレートを使って、update_attributeの呼び出しを１回のupdate_columns呼び出しにまとめてみましょう (これでデータベースへの問い合わせが１回で済むようになります)。
+また、変更後にテストを実行し、 greenになることも確認してください。
+現在は、/usersのユーザーindexページを開くとすべてのユーザーが表示され、/users/:idのようにIDを指定すると個別のユーザーを表示できます。
+しかし考えてみれば、有効でないユーザーは表示する意味がありません。
+そこで、リスト 11.40のテンプレートを使って、この動作を変更してみましょう9。
+なお、ここで使っているActive Recordのwhereメソッドについては、13.3.3でもう少し詳しく説明します。
+ここまでの演習課題で変更したコードをテストするために、/users と /users/:id の両方に対する統合テストを作成してみましょう。
+##..............................
+リスト 11.39: update_columnsを使用するテンプレート
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token, :activation_token
+  before_save   :downcase_email
+  before_create :create_activation_digest
+  .
+  .
+  .
+  # アカウントを有効にする
+  def activate
+    update_columns(activated: FILL_IN, activated_at: FILL_IN)
+  end
+
+  # 有効化用のメールを送信する
+  def send_activation_email
+    UserMailer.account_activation(self).deliver_now
+  end
+
+  private
+
+    # メールアドレスをすべて小文字にする
+    def downcase_email
+      self.email = email.downcase
+    end
+
+    # 有効化トークンとダイジェストを作成および代入する
+    def create_activation_digest
+      self.activation_token  = User.new_token
+      self.activation_digest = User.digest(activation_token)
+    end
+end
+#..............................
+
+##..............................
+リスト 11.40: 有効なユーザーだけを表示するコードのテンプレート
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def index
+    @users = User.where(activated: FILL_IN).paginate(page: params[:page])
+  end
+
+  def show
+    @user = User.find(params[:id])
+    redirect_to root_url and return unless FILL_IN
+  end
+  .
+  .
+  .
+end
+#..............................
+
+
+#-----------------------------
+[_ 11.4 ] 本番環境でのメール送信
+#-----------------------------
+
+ここまでの実装で、development環境におけるアカウント有効化の流れは完成しました。
+次は、サンプルアプリケーションの設定を変更し、production環境で実際にメールを送信できるようにしてみましょう。
+具体的には、まずは無料のサービスを利用してメール送信の設定を行い、続いてアプリケーションの設定とデプロイを行います。
+
+本番環境からメール送信するために、「SendGrid」というHerokuアドオンを利用してアカウントを検証します (このアドオンを利用するためにはHerokuアカウントにクレジットカードを設定する必要がありますが、アカウント検証では料金は発生しません)。
+本チュートリアルでは、「starter tier」というサービスを使うことにします。
+これは、(執筆時点では) 1日のメール数が最大400通までという制限がありますが、無料で利用することができます。
+アドオンをアプリケーションに追加するには、次のコマンドを実行します。
+
+$ heroku addons:create sendgrid:starter
+注: herokuコマンドのバージョンが古いとここで失敗するかもしれません。
+その場合は、Heroku Toolbeltを使って最新版に更新するか、次の古い文法のコマンドを試してみてください。
+
+$ heroku addons:add sendgrid:starter
+アプリケーションでSendGridアドオンを使うには、production環境のSMTPに情報を記入する必要があります。
+リスト 11.41に示したとおり、本番Webサイトのアドレスをhost変数に定義する必要もあります。
+
+##..............................
+リスト 11.41: Railsのproduction環境でSendGridを使う設定
+#...............................
+config/environments/production.rb
+ Rails.application.configure do
+  .
+  .
+  .
+  config.action_mailer.raise_delivery_errors = true
+  config.action_mailer.delivery_method = :smtp
+  host = '<your heroku app>.herokuapp.com'
+  config.action_mailer.default_url_options = { host: host }
+  ActionMailer::Base.smtp_settings = {
+    :address        => 'smtp.sendgrid.net',
+    :port           => '587',
+    :authentication => :plain,
+    :user_name      => ENV['SENDGRID_USERNAME'],
+    :password       => ENV['SENDGRID_PASSWORD'],
+    :domain         => 'heroku.com',
+    :enable_starttls_auto => true
+  }
+  .
+  .
+  .
+end
+#..............................
+
+リスト 11.41のメール設定にはSendGridアカウントのuser_nameとpassword設定を記入する行もありますが、そこには記入せず、必ず環境変数「ENV」に設定するよう十分ご注意ください。
+本番運用するアプリケーションでは、暗号化されていないIDやパスワードのような重要なセキュリティ情報は「絶対に」ソースコードに直接書き込まないでください。
+そのような情報は環境変数に記述し、そこからアプリケーションに読み込む必要があります。
+今回の場合、そうした変数はSendGridアドオンが自動的に設定してくれますが、13.4.4では環境変数を自分で設定しなければなりません。
+リスト 11.41で扱うHerokuの環境変数を表示したい場合は、次のコマンドを実行します。
+
+$ heroku config:get SENDGRID_USERNAME
+$ heroku config:get SENDGRID_PASSWORD
+この時点で、Gitのトピックブランチをmasterにマージしておきましょう。
+
+$ rails test
+$ git add -A
+$ git commit -m "Add account activation"
+$ git checkout master
+$ git merge account-activation
+続いてリモートリポジトリにプッシュし、Herokuにデプロイします。
+
+$ rails test
+$ git push
+$ git push heroku
+$ heroku run rails db:migrate
+Herokuへのデプロイが完了したら、自分が管理しているメールアドレスを使って、production環境でユーザー登録を行ってみましょう。
+11.2で実装した有効化メールが配信されるはずです (図 11.7)。
+受信したメールに記されているメールをクリックすると、期待通りアカウントの有効化に成功するはずです (図 11.8)。
+
+
+#.....................
+images/figures/activation_email_production_4th_ed
+  ==> activation_email_production_4th_ed.png
+図 11.7: production環境から送信したアカウント有効化メール
+#.....................
+
+
+#.....................
+images/figures/activated_in_production
+  ==> activated_in_production.png
+図 11.8: production環境でアカウント有効化に成功する
+#.....................
+
+演習
+実際に本番環境でユーザー登録をしてみましょう。
+ユーザー登録時に入力したメールアドレスにメールは届きましたか?
+メールを受信できたら、実際にメールをクリックしてアカウントを有効化してみましょう。
+また、Heroku上のログを調べてみて、有効化に関するログがどうなっているのか調べてみてください。
+ヒント: ターミナルからheroku logsコマンドを実行してみましょう。
+
+#-----------------------------
+[_ 11.5 ] 最後に
+#-----------------------------
+
+本章でアカウント有効化を実装したことにより、サンプルアプリケーションの「ユーザー登録」「ログイン」「ログアウト」の仕組みがほぼ完成したと言えるでしょう。
+これを完成させるための最後に１ピースは、ユーザーがパスワードを忘れた時の「パスワード再設定」機能です。
+第12章でも説明しますが、パスワード再設定とアカウント有効化の仕組みは非常に似ています。
+このため、本章で学習した様々な知識が次章で活きていくことになるでしょう。
+
+
+#-----------------------------------------------------
+[__ 11.5.1 ] 本章のまとめ
+#-----------------------------------------------------
+
+アカウント有効化は Active Recordオブジェクトではないが、セッションの場合と同様に、リソースでモデル化できる
+Railsは、メール送信で扱うAction Mailerのアクションとビューを生成することができる
+Action MailerではテキストメールとHTMLメールの両方を利用できる
+メイラーアクションで定義したインスタンス変数は、他のアクションやビューと同様、メイラーのビューから参照できる
+アカウントを有効化させるために、生成したトークンを使って一意のURLを作る
+より安全なアカウント有効化のために、ハッシュ化したトークン (ダイジェスト) を使う
+メイラーのテストと統合テストは、どちらもUserメイラーの振舞いを確認するのに有用
+SendGridを使うと、production環境からメールを送信できる
+
+NOTE: 1 
+本章と次章は、他の章とは独立しています (本章と次章もほぼ独立していて、リスト 11.6のメーラーを生成する部分だけが、次章を進めるために必要です)。
+したがって、読者は (必要であれば) 本章をスキップして、第12章または第13章を進めることが可能です。
+とはいえ、本章と次章の内容は密接に関わっているので、本章をスキップして次章に取り組むのはやや難しいです。
+一方で、本章と次章をスキップして先に進むのは、それほど難しくありません。
+ ↑
+
+NOTE: 2 
+この基本的な手順に加えて、あると良い機能としてはアカウント有効化メールの再送機能があります。
+例えばメールがスパムとして削除されてしまった場合など、送付したアカウント有効化メールを紛失した場合に便利です。
+本チュートリアル中では実装しませんが、読み終える頃にはこの機能を実装できるだけの能力を身につけていると思います。
+ちなみに、Devise gemには確認メールの再送機能があるので、それを使って実装する方法もあります。
+ ↑
+
+NOTE: 3 
+せっかくユーザーIDが既にアプリケーションのURLでそのまま使われているのですから、メールアドレスの代わりにユーザーIDを使うという手ももちろんあります。
+ただ、メールアドレスにしておけば、将来何らかの理由でユーザーIDをぼかしておきたくなる場合に役に立つかもしれません (競合他社があなたのアプリケーションのユーザー数を推測しにくいようにしたい、など)。
+ ↑
+
+NOTE: 4 
+editアクションを使いたいのですから、コマンドラインでeditと指定すればよいように思えますが、そうすると使いもしないeditビューやテストまで生成されてしまうのです。
+ ↑
+
+NOTE: 5 
+これがまさに、Rails 5で追加されたhas_secure_tokenメソッドを本チュートリアルで使わない理由です (secureという名前付けもちょっとよくないかもしれません...)。
+このメソッドは、データベースにハッシュ化されていないトークン (平文) を追加します。
+ ↑
+
+NOTE: 6 
+URLのクエリパラメータではキー/値ペアを複数使うこともできます。
+その場合は、「&」を使って「/edit?name=Foo%20Bar&email=foo%40example.com」のように区切ります。
+ ↑
+
+NOTE: 7 
+本章を執筆していたとき、筆者はRailsでURLをどうやってエスケープさせれば良いのかわかりませんでしたが、コラム 1.1の要領で解決することができました。
+例えば今回の場合は「ruby rails escape url」で検索して、おそらく２通りの手法 (URI::encode(str)とCGI::escape(str)) があると判断しました。
+そして両方を試してみた結果、実際に動作したのは後者の方だったのです (ちなみに実はもう１つ方法があって、ERB::Utilライブラリのurl_encodeメソッドでも同じことができそうです)。
+ ↑
+
+NOTE: 8 
+update_attributesではなくupdate_attributeを実行していることに注目してください。
+update_attributesだとバリデーションが実行されてしまうため、今回のようにパスワードを入力していない状態で更新すると、バリデーションで失敗してしまいます (6.1.5)。
+ ↑
+
+NOTE: 9 
+リスト 11.40では、&&ではなくandを使っている点に注意してください。
+&&とandの動作は「ほぼ」等価ですが、&&演算子の方がandよりも優先順位が高いので、&&だとroot_urlとの論理的な結び付きが強くなりすぎてしまい、不適切です。
+root_urlをカッコで囲んでこの問題を回避することもできますが、andを使う方が常道です。
+ ↑

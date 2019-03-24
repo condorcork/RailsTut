@@ -1,0 +1,2753 @@
+第13章
+ユーザーのマイクロポスト
+サンプルアプリケーションのコア部分を開発するために、これまでにユーザー、セッション、アカウント有効化、パスワードリセットという４つのリソースについて見てきました。
+そして、これらのうち「ユーザー」というリソースだけが、Active Recordによってデータベース上のテーブルと紐付いています。
+全ての準備が整った今、ユーザーが短いメッセージを投稿できるようにするためのリソース「マイクロポスト」を追加していきます1。
+第2章で簡易的なマイクロポスト投稿フォームに触れましたが、この章では、2.3で記述したMicropostデータモデルを作成し、Userモデルとhas_manyおよびbelongs_toメソッドを使って関連付けを行い、さらに、結果を処理し表示するために必要なフォームとその部品を作成します (13.4で画像のアップロードも実装します)。
+第14章では、マイクロポストのフィードを受け取るために、ユーザーをフォローするという概念を導入し、Twitterのミニクローンを完成させます。
+
+
+#-----------------------------
+[_ 13.1 ] Micropostモデル
+#-----------------------------
+
+まずはMicropostリソースの最も本質的な部分を表現するMicropostモデルを作成するところから始めましょう。
+2.3で作成したモデルと同様に、この新しいMicropostモデルもデータ検証とUserモデルの関連付けを含んでいます。
+以前のモデルとは違って、今回のマイクロポストモデルは完全にテストされ、デフォルトの順序を持ち、また親であるユーザーが破棄された場合には自動的に破棄されるようにします。
+
+Git をバージョン管理に使っている場合は、いつものようにトピックブランチを作成しておきましょう。
+
+$ git checkout -b user-microposts
+
+#-----------------------------------------------------
+[__ 13.1.1 ] 基本的なモデル
+#-----------------------------------------------------
+
+Micropostモデルは、マイクロポストの内容を保存するcontent属性と、特定のユーザーとマイクロポストを関連付けるuser_id属性の2つの属性だけを持ちます。
+実行した結果のMicropostモデルの構造は図 13.1のようになります。
+
+
+#.....................
+images/figures/micropost_model_3rd_edition
+  ==> micropost_model_3rd_edition.png
+図 13.1: Micropostデータモデル
+#.....................
+
+図 13.1のモデルでは、マイクロポストの投稿にString型ではなくText型を使っている点に注目してください。
+これは、ある程度の量のテキストを格納するときに使われる型です。
+String型でも255文字までは格納できるため、この型でも13.1.2で実装する140文字制限を満たせるのですが、Text型の方が表現豊かなマイクロポストを実現できます。
+例えば、13.3.2では投稿フォームにString用のテキストフィールドではなくてText用のテキストエリアを使うため、より自然な投稿フォームが実現できます。
+また、Text型の方が将来における柔軟性に富んでいて、例えばいつか国際化をするときに、言語に応じて投稿の長さを調節することもできます。
+さらに、Text型を使っていても本番環境でパフォーマンスの差は出ません2。
+これらの理由から、デメリットよりもメリットの方が多いので、今回はText型を採用しています。
+
+リスト 6.1でUserモデルを生成したときと同様に、Railsのgenerate modelコマンドを使ってMicropostモデルを生成してみます (リスト 13.1)。
+
+##..............................
+リスト 13.1: Micropostモデルを生成する
+#...............................
+$ rails generate model Micropost content:text user:references
+#..............................
+
+上のコマンドを実行すると、リスト 13.2に示すMicropostモデルが生成されます。
+つまり、6.1.2のときと同様にApplicationRecordを継承したモデルが作られます。
+ただし、今回は生成されたモデルの中に、ユーザーと１対１の関係であることを表すbelongs_toのコードも追加されています。
+これは先ほどのコマンドを実行したときにuser:referencesという引数も含めていたからです (リスト 13.1)。
+この行の細かな説明については、13.1.3で行います。
+
+##..............................
+リスト 13.2: 自動生成されたMicropostモデル
+#...............................
+app/models/micropost.rb
+ class Micropost < ApplicationRecord
+   belongs_to :user
+end
+#..............................
+
+リスト 6.2でデータベースにusersテーブルを作るマイグレーションを生成したときと同様に、このgenerateコマンドはmicropostsテーブルを作成するためのマイグレーションファイルを生成します (リスト 13.1)。
+
+Userモデルとの最大の違いはreferences型を利用している点です。
+これを利用すると、自動的にインデックスと外部キー参照付きのuser_idカラムが追加され3、UserとMicropostを関連付けする下準備をしてくれます。
+Userモデルのときと同じで、Micropostモデルのマイグレーションファイルでもt.timestampsという行 (マジックカラム) が自動的に生成されています。
+これにより、 6.1.1で説明したようにcreated_atとupdated_atというカラムが追加されます (図 13.1)。
+なお、created_atカラムは、13.1.4の実装を進めていく上で必要なカラムになります。
+
+##..............................
+リスト 13.3: インデックスが付与されたMicropostのマイグレーション
+#...............................
+db/migrate/[timestamp]_create_microposts.rb
+ class CreateMicroposts < ActiveRecord::Migration[5.0]
+  def change
+    create_table :microposts do |t|
+      t.text :content
+      t.references :user, foreign_key: true
+
+      t.timestamps
+    end
+    add_index :microposts, [:user_id, :created_at]
+  end
+end
+#..............................
+
+ここで、リスト 13.3ではuser_idとcreated_atカラムにインデックスが付与されていることに注目してください (コラム 6.2)。
+こうすることで、user_idに関連付けられたすべてのマイクロポストを作成時刻の逆順で取り出しやすくなります。
+
+add_index :microposts, [:user_id, :created_at]
+また、user_idとcreated_atの両方を１つの配列に含めている点にも注目です。
+こうすることでActive Recordは、両方のキーを同時に扱う複合キーインデックス (Multiple Key Index) を作成します。
+(訳注: 複合キーインデックスは、スタックオーバーフローのWhat is a multiple key index?で詳しく解説されています。)
+
+それでは、リスト 13.3をマイグレーションを使って、いつものようにデータベースを更新してみましょう。
+
+$ rails db:migrate
+演習
+RailsコンソールでMicropost.newを実行し、インスタンスを変数micropostに代入してください。
+その後、user_idに最初のユーザーのidを、contentに "Lorem ipsum" をそれぞれ代入してみてください。
+この時点では、 micropostオブジェクトのマジックカラム (created_atとupdated_at) には何が入っているでしょうか?
+先ほど作ったオブジェクトを使って、micropost.userを実行してみましょう。
+どのような結果が返ってくるでしょうか? また、micropost.user.nameを実行した場合の結果はどうなるでしょうか?
+先ほど作ったmicropostオブジェクトをデータベースに保存してみましょう。
+この時点でもう一度マジックカラムの内容を調べてみましょう。
+今度はどのような値が入っているでしょうか?
+
+#-----------------------------------------------------
+[__ 13.1.2 ] Micropostのバリデーション
+#-----------------------------------------------------
+
+基本的なモデルを作成したので、次に要求される制限を実現するためのバリデーションを追加しましょう。
+Micropostモデルを作成したときに、マイクロポストは投稿したユーザーのid (user_id) を持たせるようにしました。
+これを使って、慣習的に正しくActive Recordの関連付けを実装していきます (13.1.3) が、まずはMicropostモデル単体を (テスト駆動開発で) 動くようにしてみます。
+
+Micropostの初期テストはUserモデルの初期テスト (リスト 6.7) と似ています。
+まずはsetupのステップで、fixtureのサンプルユーザーと紐付けた新しいマイクロポストを作成しています。
+次に、作成したマイクロポストが有効かどうかをチェックしてます。
+最後に、あらゆるマイクロポストはユーザーのidを持っているべきなので、user_idの存在性のバリデーションに対するテストも追加します。
+これらの要素を1つにまとめると、リスト 13.4のようなテストコードになります。
+
+##..............................
+リスト 13.4: 新しいMicropostの有効性に対するテスト green
+#...............................
+test/models/micropost_test.rb
+ require 'test_helper'
+
+class MicropostTest < ActiveSupport::TestCase
+
+  def setup
+    @user = users(:michael)
+    # このコードは慣習的に正しくない
+    @micropost = Micropost.new(content: "Lorem ipsum", user_id: @user.id)
+  end
+
+  test "should be valid" do
+    assert @micropost.valid?
+  end
+
+  test "user id should be present" do
+    @micropost.user_id = nil
+    assert_not @micropost.valid?
+  end
+end
+#..............................
+
+setupメソッドの中でコメントしているとおり、マイクロポストを作成するコードは動きますが、慣習的には正しくありません (13.1.3で修正します)。
+
+元々あるUserモデルのテスト (リスト 6.5) と同じで、リスト 13.4の１つ目のテストでは、正常な状態かどうかをテスト (sanity check) しています。
+２つ目のテストでは、user_idが存在しているかどうか (nilではないか) をテストしています。
+このテストをパスさせるために、リスト 13.5で存在性のバリデーションを追加してみましょう。
+
+##..............................
+リスト 13.5: マイクロポストのuser_idに対する検証 green
+#...............................
+app/models/micropost.rb
+ class Micropost < ActiveRecord::Base
+  belongs_to :user
+  validates :user_id, presence: true
+end
+#..............................
+
+ちなみにRails 5では、リスト 13.5のバリデーションを追加しなくてもリスト 13.4のテストが成功してしまいます。
+しかしこれは、リスト 13.4でハイライトした「慣習的な意味で正しくない」というコードを書いた場合でのみ発生します。
+この部分を「慣習的に正しい」コードで実装すると、user_idに対する存在性のバリデーションが期待通りに動きます (リスト 13.12)。
+この部分を説明しておきたかったので、先ほどのコメントでハイライトしておきました。
+
+以上の背景を踏まえて、リスト 13.5のテストが (今のところ) greenになることを確認してみましょう。
+
+##..............................
+リスト 13.6: green
+#...............................
+$ rails test:models
+#..............................
+
+次に、マイクロポストのcontent属性に対するバリデーションを追加しましょう (2.3.2で紹介した例と同じです)。
+user_id属性と同様に、content属性も存在する必要があり、さらにマイクロポストが140文字より長くならないよう制限を加えます (これがマイクロポストをマイクロ (micro) と名付けた理由です)。
+
+6.2でUserモデルにバリデーションを追加したときと同様に、テスト駆動開発でMicropostモデルのバリデーションを追加していきましょう。
+基本的には、Userモデルのときと同じようなバリデーションを追加しています (リスト 13.7)。
+
+##..............................
+リスト 13.7: Micropostモデルのバリデーションに対するテスト red
+#...............................
+test/models/micropost_test.rb
+ require 'test_helper'
+
+class MicropostTest < ActiveSupport::TestCase
+
+  def setup
+    @user = users(:michael)
+    @micropost = Micropost.new(content: "Lorem ipsum", user_id: @user.id)
+  end
+
+  test "should be valid" do
+    assert @micropost.valid?
+  end
+
+  test "user id should be present" do
+    @micropost.user_id = nil
+    assert_not @micropost.valid?
+  end
+
+  test "content should be present" do
+    @micropost.content = "   "
+    assert_not @micropost.valid?
+  end
+
+  test "content should be at most 140 characters" do
+    @micropost.content = "a" * 141
+    assert_not @micropost.valid?
+  end
+end
+#..............................
+
+6.2と同様で、リスト 13.7ではマイクロポストの長さをテストするために、文字列の乗算を使っています。
+
+$ rails console
+>> "a" * 10
+=> "aaaaaaaaaa"
+>> "a" * 141
+=> "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+これに対応するアプリケーション側の実装は、Userのname用バリデーション (リスト 6.16) と全く同じです。
+リスト 13.8に結果を示します。
+
+##..............................
+リスト 13.8: Micropostモデルのバリデーション green
+#...............................
+app/models/micropost.rb
+ class Micropost < ApplicationRecord
+  belongs_to :user
+  validates :user_id, presence: true
+  validates :content, presence: true, length: { maximum: 140 }
+end
+#..............................
+
+この時点で、全てのテストが greenになるはずです。
+
+##..............................
+リスト 13.9: green
+#...............................
+$ rails test
+#..............................
+
+演習
+Railsコンソールを開き、user_idとcontentが空になっているmicropostオブジェクトを作ってみてください。
+このオブジェクトに対してvalid?を実行すると、失敗することを確認してみましょう。
+また、生成されたエラーメッセージにはどんな内容が書かれているでしょうか?
+コンソールを開き、今度はuser_idが空でcontentが141文字以上のmicropostオブジェクトを作ってみてください。
+このオブジェクトに対してvalid?を実行すると、失敗することを確認してみましょう。
+また、生成されたエラーメッセージにはどんな内容が書かれているでしょうか?
+
+#-----------------------------------------------------
+[__ 13.1.3 ] User/Micropostの関連付け
+#-----------------------------------------------------
+
+Webアプリケーション用のデータモデルを構築するにあたって、個々のモデル間での関連付けを十分考えておくことが重要です。
+今回の場合は、 2.3.3でも示したように、それぞれのマイクロポストは１人のユーザーと関連付けられ、それぞれのユーザーは (潜在的に) 複数のマイクロポストと関連付けられます。
+この関連付けを図 13.2と図 13.3に示します。
+これらの関連付けを実装するための一環として、Micropostモデルに対するテストを作成し、さらにUserモデルにいくつかのテストを追加します。
+
+
+#.....................
+images/figures/micropost_belongs_to_user
+  ==> micropost_belongs_to_user.png
+図 13.2: MicropostとそのUserは belongs_to (1対1) の関係性がある
+#.....................
+
+
+#.....................
+images/figures/user_has_many_microposts
+  ==> user_has_many_microposts.png
+図 13.3: UserとそのMicropostは has_many (1対多) の関係性がある
+#.....................
+
+この節で定義するbelongs_to/has_many関連付けを使うことで、表 13.1に示すようなメソッドをRailsで使えるようになります。
+表 13.1では次のメソッドではなく
+
+Micropost.create
+Micropost.create!
+Micropost.new
+このメソッドになっていることに注意してください。
+
+user.microposts.create
+user.microposts.create!
+user.microposts.build
+これらのメソッドは使うと、紐付いているユーザーを通してマイクロポストを作成することができます (慣習的に正しい方法です)。
+新規のマイクロポストがこの方法で作成される場合、user_idは自動的に正しい値に設定されます。
+この方法を使うと、例えば次のような
+
+@user = users(:michael)  
+# このコードは慣習的に正しくない
+@micropost = Micropost.new(content: "Lorem ipsum", user_id: @user.id)
+という書き方 (リスト 13.4) が、次のように書き換えられます。
+
+@user = users(:michael)
+@micropost = @user.microposts.build(content: "Lorem ipsum")
+(newメソッドと同様に、buildメソッドはオブジェクトを返しますがデータベースには反映されません。
+) 一度正しい関連付けを定義してしまえば、@micropost変数のuser_idには、関連するユーザーのidが自動的に設定されます。
+
+メソッド	用途
+micropost.user	Micropostに紐付いたUserオブジェクトを返す
+user.microposts	Userのマイクロポストの集合をかえす
+user.microposts.create(arg)	userに紐付いたマイクロポストを作成する
+user.microposts.create!(arg)	userに紐付いたマイクロポストを作成する (失敗時に例外を発生)
+user.microposts.build(arg)	userに紐付いた新しいMicropostオブジェクトを返す
+user.microposts.find_by(id: 1)	userに紐付いていて、idが1であるマイクロポストを検索する
+表 13.1: user/micropost関連メソッドのまとめ
+@user.microposts.buildのようなコードを使うためには、 UserモデルとMicropostモデルをそれぞれ更新して、関連付ける必要があります。
+Micropostモデルの方では、belongs_to :userというコードが必要になるのですが、これは リスト 13.10のマイグレーションによって自動的に生成されているはずです (リスト 13.10)。
+一方、Userモデルの方では、has_many :micropostsと追加する必要があります。
+ここは自動的に生成されないので、手動で追加してください (リスト 13.11)。
+
+##..............................
+リスト 13.10: マイクロポストがユーザーに所属する (belongs_to) 関連付け green
+#...............................
+app/models/micropost.rb
+ class Micropost < ApplicationRecord
+  belongs_to :user
+  validates :user_id, presence: true
+  validates :content, presence: true, length: { maximum: 140 }
+end
+#..............................
+
+##..............................
+リスト 13.11: ユーザーがマイクロポストを複数所有する (has_many) 関連付け green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  has_many :microposts
+  .
+  .
+  .
+end
+#..............................
+
+正しく関連付けができたら、リスト 13.4のsetupメソッドを修正して、慣習的に正しくマイクロポストを作成してみます (リスト 13.12)。
+
+##..............................
+リスト 13.12: 慣習的に正しくマイクロポストを作成する green
+#...............................
+test/models/micropost_test.rb
+ require 'test_helper'
+
+class MicropostTest < ActiveSupport::TestCase
+
+  def setup
+    @user = users(:michael)
+    @micropost = @user.microposts.build(content: "Lorem ipsum")
+  end
+
+  test "should be valid" do
+    assert @micropost.valid?
+  end
+
+  test "user id should be present" do
+    @micropost.user_id = nil
+    assert_not @micropost.valid?
+  end
+  .
+  .
+  .
+end
+#..............................
+
+もちろん、些細なリファクタリングでしかないので、テストは greenのままになっているはずです。
+
+##..............................
+リスト 13.13: green
+#...............................
+$ rails test
+#..............................
+
+演習
+データベースにいる最初のユーザーを変数userに代入してください。
+そのuserオブジェクトを使ってmicropost = user.microposts.create(content: "Lorem ipsum")を実行すると、どのような結果が得られるでしょうか?
+先ほどの演習課題で、データベース上に新しいマイクロポストが追加されたはずです。
+user.microposts.find(micropost.id)を実行して、本当に追加されたのかを確かめてみましょう。
+また、先ほど実行したmicropost.idの部分をmicropostに変更すると、結果はどうなるでしょうか?
+user == micropost.userを実行した結果はどうなるでしょうか? また、user.microposts.first == micropost を実行した結果はどうなるでしょうか? それぞれ確認してみてください。
+
+#-----------------------------------------------------
+[__ 13.1.4 ] マイクロポストを改良する
+#-----------------------------------------------------
+
+この項では、UserとMicropostの関連付けを改良していきます。
+具体的には、ユーザーのマイクロポストを特定の順序で取得できるようにしたり、マイクロポストをユーザーに依存させて、ユーザーが削除されたらマイクロポストも自動的に削除されるようにしていきます。
+
+デフォルトのスコープ
+user.micropostsメソッドはデフォルトでは読み出しの順序に対して何も保証しませんが、 ブログやTwitterの慣習に従って、作成時間の逆順、つまり最も新しいマイクロポストを最初に表示するようにしてみましょう4。
+これを実装するためには、default scopeというテクニックを使います。
+
+この機能のテストは、見せかけの成功に陥りやすい部分で、「アプリケーション側の実装が本当は間違っているのにテストが成功してしまう」という罠があります。
+正しいテストを書くために、ここではテスト駆動開発で進めていきます。
+具体的には、まずデータベース上の最初のマイクロポストが、fixture内のマイクロポスト (most_recent) と同じであるか検証するテストを書いていきましょう (リスト 13.14)。
+
+##..............................
+リスト 13.14: マイクロポストの順序付けをテストする red
+#...............................
+test/models/micropost_test.rb
+ require 'test_helper'
+
+class MicropostTest < ActiveSupport::TestCase
+  .
+  .
+  .
+  test "order should be most recent first" do
+    assert_equal microposts(:most_recent), Micropost.first
+  end
+end
+#..............................
+
+リスト 13.14では、マイクロポスト用のfixtureファイルからサンプルデータを読み出しているので、次のfixtureファイルも必要になります (リスト 13.15)。
+
+##..............................
+リスト 13.15: マイクロポスト用のfixture
+#...............................
+test/fixtures/microposts.yml
+ orange:
+  content: "I just ate an orange!"
+  created_at: <%= 10.minutes.ago %>
+
+tau_manifesto:
+  content: "Check out the @tauday site by @mhartl: http://tauday.com"
+  created_at: <%= 3.years.ago %>
+
+cat_video:
+  content: "Sad cats are sad: http://youtu.be/PKffm2uI4dk"
+  created_at: <%= 2.hours.ago %>
+
+most_recent:
+  content: "Writing a short test"
+  created_at: <%= Time.zone.now %>
+#..............................
+
+ここでは、埋め込みRubyを使ってcreated_atカラムに明示的に値をセットしている点に注目してください。
+このマジックカラムはRailsによって自動的に更新されるため、基本的には手動で更新することはできないのですが、fixtureファイルの中ではそれが可能になっています。
+また、原理的には必要はないかもしれませんが、ほとんどのシステムでは上から順に作成されるので、fixtureファイルでも意図的に順序をいじっています。
+例えばファイル内の一番下のサンプルデータは最後に生成されるので、最も新しい投稿になるように修正する、といった感じです。
+ただ、この振る舞いは恐らくシステムに依存していて崩れやすいので、(本来は) この振る舞いに依存したテストは書くべきでは無いでしょう。
+
+リスト 13.14とリスト 13.15を追加して、このテストを実行すると redになるはずです。
+
+##..............................
+リスト 13.16: red
+#...............................
+$ rails test test/models/micropost_test.rb
+#..............................
+
+次に、Railsのdefault_scopeメソッドを使ってこのテストを成功させます。
+このメソッドは、データベースから要素を取得したときの、デフォルトの順序を指定するメソッドです。
+特定の順序にしたい場合は、default_scopeの引数にorderを与えます。
+例えば、created_atカラムの順にしたい場合は次のようになります。
+
+order(:created_at)
+ただし、残念ながらデフォルトの順序が昇順 (ascending) となっているので、このままでは数の小さい値から大きい値にソートされてしまいます (最も古い投稿が最初に表示されてしまいます)。
+順序を逆にしたい場合は、一段階低いレベルの技術ではありますが、次のように生のSQLを引数に与える必要があります。
+
+order('created_at DESC')
+ここで使ったDESCとは、SQLの降順 (descending) を指します。
+したがって、これで新しい投稿から古い投稿の順に並びます5。
+古いバージョンのRailsでは、欲しい振る舞いにするためには生のSQLを書くしか選択肢がなかったのですが、Rails 4.0からは次のようにRubyの文法でも書けるようになりました。
+
+order(created_at: :desc)
+このコードを使ってMicropostモデルを更新した結果を、リスト 13.17に示します。
+
+##..............................
+リスト 13.17: default_scopeでマイクロポストを順序付ける green
+#...............................
+app/models/micropost.rb
+ class Micropost < ApplicationRecord
+  belongs_to :user
+  default_scope -> { order(created_at: :desc) }
+  validates :user_id, presence: true
+  validates :content, presence: true, length: { maximum: 140 }
+end
+#..............................
+
+リスト 13.17では新たに、ラムダ式 (Stabby lambda) という文法を使っています。
+これは、Procやlambda (もしくは無名関数)と呼ばれるオブジェクトを作成する文法です。
+->というラムダ式は、ブロック (4.3.2) を引数に取り、Procオブジェクトを返します。
+このオブジェクトは、callメソッドが呼ばれたとき、ブロック内の処理を評価します。
+この構文をコンソールで確かめてみましょう。
+
+>> -> { puts "foo" }
+=> #<Proc:0x007fab938d0108@(irb):1 (lambda)>
+>> -> { puts "foo" }.call
+foo
+=> nil
+(ProcはRubyの中でも少し高度なトピックなので、今すぐわからなくても心配する必要はありません。)
+
+リスト 13.17のコードを追加することで、テストスイートは greenになるはずです。
+
+##..............................
+リスト 13.18: green
+#...............................
+$ rails test
+#..............................
+
+(訳注: default scopeの使い方についてはRailsガイドのデフォルトスコープを適用するをお読みください。)
+
+Dependent: destroy
+順序についてはひとまずここで区切ることにし、今度はマイクロポストに第二の要素を追加してみましょう。
+10.4で書いたように、サイト管理者はユーザーを破棄する権限を持ちます。
+ユーザーが破棄された場合、ユーザーのマイクロポストも同様に破棄されるべきです。
+
+この振る舞いは、has_manyメソッドにオプションを渡してあげることで実装できます (リスト 13.19)。
+
+##..............................
+リスト 13.19: マイクロポストは、その所有者 (ユーザー) と一緒に破棄されることを保証する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  has_many :microposts, dependent: :destroy
+  .
+  .
+  .
+end
+#..............................
+
+dependent: :destroyというオプションを使うと、ユーザーが削除されたときに、そのユーザーに紐付いた (そのユーザーが投稿した) マイクロポストも一緒に削除されるようになります。
+これは、管理者がシステムからユーザーを削除したとき、持ち主の存在しないマイクロポストがデータベースに取り残されてしまう問題を防ぎます。
+
+次に、リスト 13.19が正しく動くかどうか、テストを使ってUserモデルを検証してみます。
+このテストでは、 (idを紐づけるための) ユーザーを作成することと、そのユーザーに紐付いたマイクロポストを作成する必要があります。
+その後、ユーザーを削除してみて、マイクロポストの数が1つ減っているかどうかを確認します。
+作成したコードをリスト 13.20に示します。
+なお、以前に書いた [delete] リンクの統合テスト (リスト 10.62) と比較してみると理解の助けになるかもしれません。
+
+##..............................
+リスト 13.20: dependent: :destroyのテスト green
+#...............................
+test/models/user_test.rb
+ require 'test_helper'
+
+class UserTest < ActiveSupport::TestCase
+
+  def setup
+    @user = User.new(name: "Example User", email: "user@example.com",
+                     password: "foobar", password_confirmation: "foobar")
+  end
+  .
+  .
+  .
+  test "associated microposts should be destroyed" do
+    @user.save
+    @user.microposts.create!(content: "Lorem ipsum")
+    assert_difference 'Micropost.count', -1 do
+      @user.destroy
+    end
+  end
+end
+#..............................
+
+リスト 13.19のコードが正しく動いていれば、テストが greenになります。
+
+##..............................
+リスト 13.21: green
+#...............................
+$ rails test
+#..............................
+
+演習
+Micropost.first.created_atの実行結果と、Micropost.last.created_atの実行結果を比べてみましょう。
+Micropost.firstを実行したときに発行されるSQL文はどうなっているでしょうか? 同様にして、Micropost.lastの場合はどうなっているでしょうか? ヒント: それぞれをコンソール上で実行したときに表示される文字列が、SQL文になります。
+データベース上の最初のユーザーを変数userに代入してください。
+そのuserオブジェクトが最初に投稿したマイクロポストのidはいくつでしょうか? 次に、destroyメソッドを使ってそのuserオブジェクトを削除してみてください。
+削除すると、そのuserに紐付いていたマイクロポストも削除されていることをMicropost.findで確認してみましょう。
+
+#-----------------------------
+[_ 13.2 ] マイクロポストを表示する
+#-----------------------------
+
+Web経由でマイクロポストを作成する方法は現時点ではありませんが (13.3.2から作り始めます)、マイクロポストを表示することと、テストすることならできます。
+ここでは、Twitterのような独立したマイクロポストのindexページは作らずに、図 13.4のモックアップに示したように、ユーザーのshowページで直接マイクロポストを表示させることにします。
+ユーザープロフィールにマイクロポストを表示させるため、最初に極めてシンプルなERbテンプレートを作成します。
+次に、10.3.2のサンプルデータ生成タスクにマイクロポストのサンプルを追加して、画面にサンプルデータが表示されるようにしてみます。
+
+
+#.....................
+images/figures/user_microposts_mockup_3rd_edition
+  ==> user_microposts_mockup_3rd_edition.png
+図 13.4: マイクロポストが表示されたプロフィールページのモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 13.2.1 ] マイクロポストの描画
+#-----------------------------------------------------
+
+本項では、ユーザーのプロフィール画面 (show.html.erb) でそのユーザーのマイクロポストを表示させたり、これまでに投稿した総数も表示させたりしていきます。
+とはいえ、今回必要となるアイデアのほとんどは、10.3で実装したユーザーを表示する部分と似ています。
+
+演習で既にマイクロポストをいくつか作成していた場合は、一度データベースをリセットし、サンプルデータを再生成しておいてください。
+
+$ rails db:migrate:reset
+$ rails db:seed
+まずは、Micropostのコントローラとビューを作成するために、コントローラを生成しましょう。
+なお、今回使うのはビューだけで、Micropostsコントローラは 13.3から使っていきます。
+
+$ rails generate controller Microposts
+今回の目的は、ユーザー毎にすべてのマイクロポストを描画できるようにすることです。
+10.3.5で見た次のコードでは、
+
+<ul class="users">
+  <%= render @users %>
+</ul>
+_user.html.erbパーシャルを使って自動的に@users変数内のそれぞれのユーザーを出力していました。
+これを参考に、_micropost.html.erbパーシャルを使ってマイクロポストのコレクションを表示しようとすると、次のようになります。
+
+<ol class="microposts">
+  <%= render @microposts %>
+</ol>
+まずは、順序無しリストのulタグではなく、順序付きリストのolタグを使っている点に注目してください。
+これは、マイクロポストが特定の順序 (新しい→古い) に依存しているためです。
+次に、対応するパーシャルをリスト 13.22に示します。
+
+##..............................
+リスト 13.22: 1つのマイクロポストを表示するパーシャル
+#...............................
+app/views/microposts/_micropost.html.erb
+ <li id="micropost-<%= micropost.id %>">
+  <%= link_to gravatar_for(micropost.user, size: 50), micropost.user %>
+  <span class="user"><%= link_to micropost.user.name, micropost.user %></span>
+  <span class="content"><%= micropost.content %></span>
+  <span class="timestamp">
+    Posted <%= time_ago_in_words(micropost.created_at) %> ago.
+  </span>
+</li>
+#..............................
+
+ここではtime_ago_in_wordsというヘルパーメソッドを使っています。
+これはメソッド名の表すとおりですが、「3分前に投稿」といった文字列を出力します。
+具体的な効果について13.2.2で説明します。
+また、リスト 13.22では各マイクロポストに対してCSSのidを割り振っています。
+
+<li id="micropost-<%= micropost.id %>">
+これは一般的に良いとされる慣習で、例えば将来、JavaScriptを使って各マイクロポストを操作したくなったときなどに役立ちます。
+
+次は、一度にすべてのマイクロポストが表示されてしまう潜在的問題に対処します。
+10.3.3ではページネーションを使いましたが、今回も同じ方法でこの問題を解決します。
+前回同様、will_paginateメソッドを使うと次のようになります。
+
+<%= will_paginate @microposts %>
+リスト 10.45のユーザー一覧画面のコードと比較すると、少し違っています。
+以前は次のように単純なコードでした。
+
+<%= will_paginate %>
+実は、上のコードは引数なしで動作していました。
+これはwill_paginateが、Usersコントローラのコンテキストにおいて、@usersインスタンス変数が存在していることを前提としているためです。
+このインスタンス変数は、10.3.3でも述べたようにActiveRecord::Relationクラスのインスタンスです。
+今回の場合はUsersコントローラのコンテキストからマイクロポストをページネーションしたいため (つまりコンテキストが異なるため)、明示的に@microposts変数をwill_paginateに渡す必要があります。
+したがって、そのようなインスタンス変数をUsersコントローラのshowアクションで定義しなければなりません (リスト 13.23)。
+
+##..............................
+リスト 13.23: @micropostsインスタンス変数をshowアクションに追加する
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def show
+    @user = User.find(params[:id])
+    @microposts = @user.microposts.paginate(page: params[:page])
+  end
+  .
+  .
+  .
+end
+#..............................
+
+paginateメソッドの素晴らしさに注目してください。
+マイクロポストの関連付けを経由してmicropostテーブルに到達し、必要なマイクロポストのページを引き出してくれます。
+
+最後の課題はマイクロポストの投稿数を表示することですが、これはcountメソッドを使うことで解決できます。
+
+user.microposts.count
+paginateと同様に、関連付けをとおしてcountメソッドを呼び出すことができます。
+大事なことは、countメソッドではデータベース上のマイクロポストを全部読みだしてから結果の配列に対してlengthを呼ぶ、といった無駄な処理はしていないという点です。
+そんなことをしたら、マイクロポストの数が増加するにつれて効率が低下してしまいます。
+そうではなく、(データベース内での計算は高度に最適化されているので) データベースに代わりに計算してもらい、特定のuser_idに紐付いたマイクロポストの数をデータベースに問い合わせています。
+(それでもcountメソッドがアプリケーションのボトルネックになるようなことがあれば、さらに高速なcounter cacheを使うこともできます。)
+
+これですべての要素が揃ったので、プロフィール画面にマイクロポストを表示させてみましょう (リスト 13.24)。
+(このとき、リスト 7.21と同様に if @user.microposts.any? を使って、ユーザーのマイクロポストが1つもない場合には空のリストを表示させていない点にも注目してください。)
+
+##..............................
+リスト 13.24: マイクロポストをユーザーのshowページ (プロフィール画面) に追加する
+#...............................
+app/views/users/show.html.erb
+ <% provide(:title, @user.name) %>
+<div class="row">
+  <aside class="col-md-4">
+    <section class="user_info">
+      <h1>
+        <%= gravatar_for @user %>
+        <%= @user.name %>
+      </h1>
+    </section>
+  </aside>
+  <div class="col-md-8">
+    <% if @user.microposts.any? %>
+      <h3>Microposts (<%= @user.microposts.count %>)</h3>
+      <ol class="microposts">
+        <%= render @microposts %>
+      </ol>
+      <%= will_paginate @microposts %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+ここで、改良した新しいプロフィール画面をブラウザで見てみましょう (図 13.5)。
+ …何とも寂しいページで、がっかりですね。
+マイクロポストが1つもないのでは無理もありません。
+ではここでマイクロポストを追加しましょう。
+
+
+#.....................
+images/figures/user_profile_no_microposts_3rd_edition
+  ==> user_profile_no_microposts_3rd_edition.png
+図 13.5: マイクロポスト用のコードのあるユーザープロフィールページ (ただしマイクロポストがない)
+#.....................
+
+演習
+7.3.3で軽く説明したように、今回ヘルパーメソッドとして使ったtime_ago_in_wordsメソッドは、Railsコンソールのhelperオブジェクトから呼び出すことができます。
+このhelperオブジェクトのtime_ago_in_wordsメソッドを使って、3.weeks.agoや6.months.agoを実行してみましょう。
+helper.time_ago_in_words(1.year.ago)と実行すると、どういった結果が返ってくるでしょうか?
+micropostsオブジェクトのクラスは何でしょうか? ヒント: リスト 13.23内のコードににあるように、まずはpaginateメソッド (引数はpage: nil) でオブジェクトを取得し、その後classメソッドを呼び出してみましょう。
+
+#-----------------------------------------------------
+[__ 13.2.2 ] マイクロポストのサンプル
+#-----------------------------------------------------
+
+13.2.1のユーザーマイクロポストのテンプレート作成作業の成果は、何とも拍子抜けでした。
+10.3.2のサンプルデータ生成タスクにマイクロポストも追加して、この情けない状況を修正しましょう。
+
+すべてのユーザーにマイクロポストを追加しようとすると時間が掛かり過ぎるので、takeメソッドを使って最初の6人だけに追加します。
+
+User.order(:created_at).take(6)
+(このとき、orderメソッドを経由することで、明示的に最初の (IDが小さい順に) 6人を呼び出すようにしています。)
+
+この6人については、1ページの表示限界数 (30) を越えさせるために、それぞれ50個分のマイクロポストを追加するようにしています。
+また、各投稿内容についてですが、Faker gemにLorem.sentenceという便利なメソッドがあるので、これを使います6。
+変更した結果はリスト 13.25のとおりです。
+(リスト 13.25のループの順序に違和感があるかもしれませんが、これは14.3でステータスフィード (いわゆるタイムライン) を実装するときに役立ちます。
+というのも、ユーザー毎に50個分のマイクロポストをまとめて作成してしまうと、ステータスフィードに表示される投稿がすべて同じユーザーになってしまい、視覚的な見栄えが悪くなるからです。)
+
+##..............................
+リスト 13.25: サンプルデータにマイクロポストを追加する
+#...............................
+db/seeds.rb
+ .
+.
+.
+users = User.order(:created_at).take(6)
+50.times do
+  content = Faker::Lorem.sentence(5)
+  users.each { |user| user.microposts.create!(content: content) }
+end
+#..............................
+
+ここで、いつものように開発環境用のデータベースで再度サンプルデータを生成します。
+
+$ rails db:migrate:reset
+$ rails db:seed
+生成し終わったら、Railsサーバーを一度落として、起動し直してください。
+
+それぞれのマイクロポストの情報を表示することによって、13.2.1の地道な作業がやっと報われました7。
+実行結果を図 13.6に示します。
+
+
+#.....................
+images/figures/user_profile_microposts_no_styling_3rd_edition
+  ==> user_profile_microposts_no_styling_3rd_edition.png
+図 13.6: プロフィールとマイクロポスト (CSSは未適用)
+#.....................
+
+図 13.6のページにはマイクロポスト固有のスタイルが与えられていないので、リスト 13.26を追加して、結果のページを見てみましょう8。
+
+##..............................
+リスト 13.26: マイクロポスト用のCSS (本章で利用するCSSのすべて)
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* microposts */
+
+.microposts {
+  list-style: none;
+  padding: 0;
+  li {
+    padding: 10px 0;
+    border-top: 1px solid #e8e8e8;
+  }
+  .user {
+    margin-top: 5em;
+    padding-top: 0;
+  }
+  .content {
+    display: block;
+    margin-left: 60px;
+    img {
+      display: block;
+      padding: 5px 0;
+    }
+  }
+  .timestamp {
+    color: $gray-light;
+    display: block;
+    margin-left: 60px;
+  }
+  .gravatar {
+    float: left;
+    margin-right: 10px;
+    margin-top: 5px;
+  }
+}
+
+aside {
+  textarea {
+    height: 100px;
+    margin-bottom: 5px;
+  }
+}
+
+span.picture {
+  margin-top: 10px;
+  input {
+    border: 0;
+  }
+}
+#..............................
+
+図 13.7では最初のユーザーのプロフィール画面を、図 13.8では2番目のユーザーのプロフィール画面を表示しています。
+最後の図 13.9では、最初のユーザーの2番目のページと、下部にあるページネーションのリンクを表示しています。
+各マイクロポストの表示には、3つのどの場合にも、それが作成されてからの時間 ("1分前に投稿" など) が表示されていることに注目してください。
+これはリスト 13.22のtime_ago_in_wordsメソッドによるものです。
+数分待ってからページを再度読み込むと、このテキストは自動的に新しい時間に基づいて更新されます。
+
+
+#.....................
+images/figures/user_profile_with_microposts_3rd_edition
+  ==> user_profile_with_microposts_3rd_edition.png
+図 13.7: プロフィールとマイクロポスト (/users/1)
+#.....................
+
+
+#.....................
+images/figures/other_profile_with_microposts_3rd_edition
+  ==> other_profile_with_microposts_3rd_edition.png
+図 13.8: 別ユーザーのプロフィールとマイクロポスト (/users/5).
+#.....................
+
+
+#.....................
+images/figures/user_profile_microposts_page_2_3rd_edition
+  ==> user_profile_microposts_page_2_3rd_edition.png
+図 13.9: マイクロポストのページネーション用リンク (/users/1?page=2).
+#.....................
+
+演習
+(1..10).to_a.take(6)というコードの実行結果を推測できますか? 推測した値が合っているかどうか、実際にコンソールを使って確認してみましょう。
+先ほどの演習にあったto_aメソッドの部分は本当に必要でしょうか? 確かめてみてください。
+Fakerはlorem ipsum以外にも、非常に多種多様の事例に対応しています。
+Fakerのドキュメント (英語) を眺めながら画面に出力する方法を学び、実際に大学名や電話番号、Hipster IpsumやChuck Norris facts (参考: チャック・ノリスの真実) を画面に出力してみましょう。
+(訳注: もちろん日本語にも対応していて、例えば沖縄らしい用語を出力するfaker-okinawaもあります。
+ぜひ遊んでみてください。)
+
+#-----------------------------------------------------
+[__ 13.2.3 ] プロフィール画面のマイクロポストをテストする
+#-----------------------------------------------------
+
+アカウントを有効化したばかりのユーザーはプロフィール画面にリダイレクトされるので、そのプロフィール画面が正しく描画されていることは、単体テストを通して確認済みです (リスト 11.33)。
+この項では、プロフィール画面で表示されるマイクロポストに対して、統合テストを書いていきます。
+まずは、プロフィール画面用の統合テストを生成してみましょう。
+
+$ rails generate integration_test users_profile
+      invoke  test_unit
+      create    test/integration/users_profile_test.rb
+プロフィール画面におけるマイクロポストをテストするためには、ユーザーに紐付いたマイクロポストのテスト用データが必要になります。
+Railsの慣習に従って、関連付けされたテストデータをfixtureファイルに追加すると、次のようになります。
+
+orange:
+  content: "I just ate an orange!"
+  created_at: <%= 10.minutes.ago %>
+  user: michael
+userにmichaelという値を渡すと、Railsはfixtureファイル内の対応するユーザーを探し出して、(もし見つかれば) マイクロポストに関連付けてくれます。
+
+michael:
+  name: Michael Example
+  email: michael@example.com
+  .
+  .
+  .
+また、マイクロポストのページネーションをテストするためには、マイクロポスト用のfixtureにいくつかテストデータを追加する必要がありますが、これはリスト 10.47でユーザーを追加したときと同様に、埋め込みRubyを使うと簡単です。
+
+<% 30.times do |n| %>
+micropost_<%= n %>:
+  content: <%= Faker::Lorem.sentence(5) %>
+  created_at: <%= 42.days.ago %>
+  user: michael
+<% end %>
+これらのコードを1つにまとめると、マイクロポスト用のfixtureファイルはリスト 13.27のようになります。
+
+##..............................
+リスト 13.27: ユーザーと関連付けされたマイクロポストのfixture
+#...............................
+test/fixtures/microposts.yml
+ orange:
+  content: "I just ate an orange!"
+  created_at: <%= 10.minutes.ago %>
+  user: michael
+
+tau_manifesto:
+  content: "Check out the @tauday site by @mhartl: http://tauday.com"
+  created_at: <%= 3.years.ago %>
+  user: michael
+
+cat_video:
+  content: "Sad cats are sad: http://youtu.be/PKffm2uI4dk"
+  created_at: <%= 2.hours.ago %>
+  user: michael
+
+most_recent:
+  content: "Writing a short test"
+  created_at: <%= Time.zone.now %>
+  user: michael
+
+<% 30.times do |n| %>
+micropost_<%= n %>:
+  content: <%= Faker::Lorem.sentence(5) %>
+  created_at: <%= 42.days.ago %>
+  user: michael
+<% end %>
+テストデータの準備は完了したので、これからテストを書いていきますが、今回のテストはやや単純です。
+今回のテストでは、プロフィール画面にアクセスした後に、ページタイトルとユーザー名、Gravatar、マイクロポストの投稿数、そしてページ分割されたマイクロポスト、といった順でテストしていきます。
+作成したコードをリスト 13.28に示します。
+(Applicationヘルパーを読み込んだことでリスト 4.2のfull_titleヘルパーが利用できている点に注目してください。
+)9
+
+#..............................
+
+##..............................
+リスト 13.28: Userプロフィール画面に対するテストgreen
+#...............................
+test/integration/users_profile_test.rb
+ require 'test_helper'
+
+class UsersProfileTest < ActionDispatch::IntegrationTest
+  include ApplicationHelper
+
+  def setup
+    @user = users(:michael)
+  end
+
+  test "profile display" do
+    get user_path(@user)
+    assert_template 'users/show'
+    assert_select 'title', full_title(@user.name)
+    assert_select 'h1', text: @user.name
+    assert_select 'h1>img.gravatar'
+    assert_match @user.microposts.count.to_s, response.body
+    assert_select 'div.pagination'
+    @user.microposts.paginate(page: 1).each do |micropost|
+      assert_match micropost.content, response.body
+    end
+  end
+end
+#..............................
+
+リスト 13.28ではマイクロポストの投稿数をチェックするために、第12章の演習 (12.3.3.1) で紹介したresponse.bodyを使っています。
+名前を見ると誤解されがちですが、response.bodyにはそのページの完全なHTMLが含まれています (HTMLのbodyタグだけではありません)。
+したがって、そのページのどこかしらにマイクロポストの投稿数が存在するのであれば、次のように探し出してマッチできるはずです。
+
+assert_match @user.microposts.count.to_s, response.body
+これはassert_selectよりもずっと抽象的なメソッドです。
+特に、assert_selectではどのHTMLタグを探すのか伝える必要がありますが、assert_matchメソッドではその必要がない点が違います。
+
+また、リスト 13.28のassert_selectの引数では、ネストした文法を使っている点にも注目してください。
+
+assert_select 'h1>img.gravatar'
+このように書くことで、h1タグ (トップレベルの見出し) の内側にある、gravatarクラス付きのimgタグがあるかどうかをチェックできます。
+
+そして、アプリケーション側のコードは実装済みなので、これらのテストは greenになるはずです。
+
+##..............................
+リスト 13.29: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 13.28にある２つの’h1’のテストが正しいか確かめるため、該当するアプリケーション側のコードをコメントアウトしてみましょう。
+テストが green から redに変わることを確認してみてください。
+リスト 13.28にあるテストを変更して、will_paginateが１度のみ表示されていることをテストしてみましょう。
+ヒント: 表 5.2を参考にしてください。
+
+#-----------------------------
+[_ 13.3 ] マイクロポストを操作する
+#-----------------------------
+
+データモデリングとマイクロポスト表示テンプレートの両方が完成したので、次はWeb経由でそれらを作成するためのインターフェイスに取りかかりましょう。
+この節では、ステータスフィード (第14章で完成させます) の最初のヒントをお見せします。
+最後に、ユーザーがマイクロポストをWeb経由で破棄できるようにします。
+
+従来のRails開発の慣習と異なる箇所が1つあります。
+Micropostsリソースへのインターフェイスは、主にプロフィールページとHomeページのコントローラを経由して実行されるので、Micropostsコントローラにはnewやeditのようなアクションは不要ということになります。
+つまり、createとdestroyがあれば十分です。
+したがって、Micropostsのリソースはリスト 13.30のようになります。
+その結果、リスト 13.30のコードは、RESTfulなルーティング (表 2.3) のサブセット (表 13.2) になります。
+もちろん、シンプルになったということは完成度がさらに高まったということの証しであり、退化したわけではありません。
+第2章でscaffoldに頼りきりだった頃からここに至るまでは長い道のりでしたが、今ではscaffoldが生成するような複雑なコードはほとんど不要になりました。
+
+##..............................
+リスト 13.30: マイクロポストリソースのルーティング
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root   'static_pages#home'
+  get    '/help',    to: 'static_pages#help'
+  get    '/about',   to: 'static_pages#about'
+  get    '/contact', to: 'static_pages#contact'
+  get    '/signup',  to: 'users#new'
+  get    '/login',   to: 'sessions#new'
+  post   '/login',   to: 'sessions#create'
+  delete '/logout',  to: 'sessions#destroy'
+  resources :users
+  resources :account_activations, only: [:edit]
+  resources :password_resets,     only: [:new, :create, :edit, :update]
+  resources :microposts,          only: [:create, :destroy]
+end
+#..............................
+
+HTTPリクエスト	URL	アクション	名前付きルート
+POST	/microposts	create	microposts_path
+DELETE	/microposts/1	destroy	micropost_path(micropost)
+表 13.2: Micropostsリソースが提供するリスト 13.30のRESTfulルート
+
+#-----------------------------------------------------
+[__ 13.3.1 ] マイクロポストのアクセス制御
+#-----------------------------------------------------
+
+Micropostsリソースの開発では、Micropostsコントローラ内のアクセス制御から始めることにしましょう。
+関連付けられたユーザーを通してマイクロポストにアクセスするので、createアクションやdestroyアクションを利用するユーザーは、ログイン済みでなければなりません。
+
+ログイン済みかどうかを確かめるテストでは、Usersコントローラ用のテストがそのまま役に立ちます (リスト 10.20、リスト 10.61)。
+つまり、正しいリクエストを各アクションに向けて発行し、マイクロポストの数が変化していないかどうか、また、リダイレクトされるかどうかを確かめればよいのです (リスト 13.31)。
+
+##..............................
+リスト 13.31: Micropostsコントローラの認可テスト red
+#...............................
+test/controllers/microposts_controller_test.rb
+ require 'test_helper'
+
+class MicropostsControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @micropost = microposts(:orange)
+  end
+
+  test "should redirect create when not logged in" do
+    assert_no_difference 'Micropost.count' do
+      post microposts_path, params: { micropost: { content: "Lorem ipsum" } }
+    end
+    assert_redirected_to login_url
+  end
+
+  test "should redirect destroy when not logged in" do
+    assert_no_difference 'Micropost.count' do
+      delete micropost_path(@micropost)
+    end
+    assert_redirected_to login_url
+  end
+end
+#..............................
+
+リスト 13.31のテストにパスするコードを書くためには、少しアプリケーション側のコードをリファクタリングしておく必要があります。
+というのも、10.2.1では、beforeフィルターのlogged_in_userメソッドを使って、ログインを要求したことについて思い出してください (リスト 10.15)。
+あのときはUsersコントローラ内にこのメソッドがあったので、beforeフィルターで指定していましたが、このメソッドはMicropostsコントローラでも必要です。
+そこで、各コントローラが継承するApplicationコントローラに (4.4.4)、このメソッドを移してしまいましょう。
+10作成したコードをリスト 13.32に示します。
+
+##..............................
+リスト 13.32: logged_in_userメソッドをApplicationコントローラに移す red
+#...............................
+app/controllers/application_controller.rb
+ class ApplicationController < ActionController::Base
+  protect_from_forgery with: :exception
+  include SessionsHelper
+
+  private
+
+    # ユーザーのログインを確認する
+    def logged_in_user
+      unless logged_in?
+        store_location
+        flash[:danger] = "Please log in."
+        redirect_to login_url
+      end
+    end
+end
+#..............................
+
+コードが重複しないよう、このときUsersコントローラからもlogged_in_userを削除しておきましょう (リスト 13.33)。
+
+##..............................
+リスト 13.33: Usersコントローラ内のlogged_in_userフィルターを削除する red
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:index, :edit, :update, :destroy]
+  .
+  .
+  .
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+
+    # beforeフィルター
+
+    # 正しいユーザーかどうかを確認
+    def correct_user
+      @user = User.find(params[:id])
+      redirect_to(root_url) unless current_user?(@user)
+    end
+
+    # 管理者かどうかを確認
+    def admin_user
+      redirect_to(root_url) unless current_user.admin?
+    end
+end
+#..............................
+
+リスト 13.32のコードによって、Micropostsコントローラからもlogged_in_userメソッドを呼び出せるようになりました。
+これにより、createアクションやdestroyアクションに対するアクセス制限が、beforeフィルターで簡単に実装できるようになります (リスト 13.34)。
+
+##..............................
+リスト 13.34: Micropostsコントローラの各アクションに認可を追加する green
+#...............................
+app/controllers/microposts_controller.rb
+ class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+
+  def create
+  end
+
+  def destroy
+  end
+end
+#..............................
+
+これでテストは greenになるはずです。
+
+##..............................
+リスト 13.35: green
+#...............................
+$ rails test
+#..............................
+
+演習
+なぜUsersコントローラ内にあるlogged_in_userフィルターを残したままにするとマズイのでしょうか? 考えてみてください。
+
+#-----------------------------------------------------
+[__ 13.3.2 ] マイクロポストを作成する
+#-----------------------------------------------------
+
+第7章では、HTTP POSTリクエストをUsersコントローラのcreateアクションに発行するHTMLフォームを作成することで、ユーザーのサインアップを実装しました。
+マイクロポスト作成の実装もこれと似ています。
+主な違いは、別の micropost/new ページを使う代わりに、ホーム画面 (つまりルートパス) にフォームを置くという点です。
+図 13.10のモックアップを見てください。
+
+
+#.....................
+images/figures/home_page_with_micropost_form_mockup_bootstrap
+  ==> home_page_with_micropost_form_mockup_bootstrap.png
+図 13.10: マイクロポスト作成フォームのあるホーム画面のモックアップ
+#.....................
+
+最後にホーム画面を実装したときは (図 5.8)、[Sign up now!] ボタンが中央にありました。
+マイクロポスト作成フォームは、ログインしている特定のユーザーのコンテキストでのみ機能するので、この節の一つの目標は、ユーザーのログイン状態に応じて、ホーム画面の表示を変更することです。
+これについては、リスト 13.37で実装します。
+
+次に、マイクロポストのcreateアクションを作り始めましょう。
+このアクションも、リスト 7.28のユーザー用アクションと似ています。
+違いは、新しいマイクロポストをbuildするためにUser/Micropost関連付けを使っている点です (リスト 13.36)。
+micropost_paramsでStrong Parametersを使っていることにより、マイクロポストのcontent属性だけがWeb経由で変更可能になっている点に注目してください。
+
+##..............................
+リスト 13.36: Micropostsコントローラのcreateアクション
+#...............................
+app/controllers/microposts_controller.rb
+ class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+
+  def create
+    @micropost = current_user.microposts.build(micropost_params)
+    if @micropost.save
+      flash[:success] = "Micropost created!"
+      redirect_to root_url
+    else
+      render 'static_pages/home'
+    end
+  end
+
+  def destroy
+  end
+
+  private
+
+    def micropost_params
+      params.require(:micropost).permit(:content)
+    end
+end
+#..............................
+
+マイクロポスト作成フォームを構築するために、サイト訪問者がログインしているかどうかに応じて異なるHTMLを提供するコードを使います (リスト 13.37)。
+
+##..............................
+リスト 13.37: Homeページ (/) にマイクロポストの投稿フォームを追加する
+#...............................
+app/views/static_pages/home.html.erb
+ <% if logged_in? %>
+  <div class="row">
+    <aside class="col-md-4">
+      <section class="user_info">
+        <%= render 'shared/user_info' %>
+      </section>
+      <section class="micropost_form">
+        <%= render 'shared/micropost_form' %>
+      </section>
+    </aside>
+  </div>
+<% else %>
+  <div class="center jumbotron">
+    <h1>Welcome to the Sample App</h1>
+
+    <h2>
+      This is the home page for the
+      <a href="https://railstutorial.jp/">Ruby on Rails Tutorial</a>
+      sample application.
+    </h2>
+
+    <%= link_to "Sign up now!", signup_path, class: "btn btn-lg btn-primary" %>
+  </div>
+
+  <%= link_to image_tag("rails.png", alt: "Rails logo"),
+              'http://rubyonrails.org/' %>
+<% end %>
+#..............................
+
+if-else文の分岐でコードを書き分けている点が少し汚いですが、このコードのリファクタリングは演習に回すことにします (13.3.2.1)。
+
+リスト 13.37のコードを動かすためには、いくつかのパーシャルを作る必要があります。
+まずはHomeページの新しいサイドバーからです。
+次のリスト 13.38のようになります。
+
+##..............................
+リスト 13.38: サイドバーで表示するユーザー情報のパーシャル
+#...............................
+app/views/shared/_user_info.html.erb
+ <%= link_to gravatar_for(current_user, size: 50), current_user %>
+<h1><%= current_user.name %></h1>
+<span><%= link_to "view my profile", current_user %></span>
+<span><%= pluralize(current_user.microposts.count, "micropost") %></span>
+#..............................
+
+プロフィールサイドバー (リスト 13.24) のときと同様、リスト 13.38のユーザー情報にも、そのユーザーが投稿したマイクロポストの総数が表示されていることに注目してください。
+ただし少し表示に違いがあります。
+プロフィールサイドバーでは、 “Microposts” をラベルとし、「Microposts (1)」と表示することは問題ありません。
+しかし、今回のように “1 microposts” と表示してしまうと英語の文法上誤りになってしまいます。
+そこで、7.3.3で紹介したpluralizeメソッドを使って “1 micropost” や “2 microposts” と表示するように調整しています。
+
+次はマイクロポスト作成フォームを定義します (リスト 13.39)。
+これはユーザー登録フォームに似ています (リスト 7.15)。
+
+##..............................
+リスト 13.39: マイクロポスト投稿フォームのパーシャル
+#...............................
+app/views/shared/_micropost_form.html.erb
+ <%= form_for(@micropost) do |f| %>
+  <%= render 'shared/error_messages', object: f.object %>
+  <div class="field">
+    <%= f.text_area :content, placeholder: "Compose new micropost..." %>
+  </div>
+  <%= f.submit "Post", class: "btn btn-primary" %>
+<% end %>
+#..............................
+
+リスト 13.39のフォームが動くようにするためには、2箇所の変更が必要です。
+1つは、(以前と同様) 関連付けを使って次のように@micropostを定義することです。
+
+@micropost = current_user.microposts.build
+作成したコードをリスト 13.40に示します。
+
+##..............................
+リスト 13.40: homeアクションにマイクロポストのインスタンス変数を追加する
+#...............................
+app/controllers/static_pages_controller.rb
+ class StaticPagesController < ApplicationController
+
+  def home
+    @micropost = current_user.microposts.build if logged_in?
+  end
+
+  def help
+  end
+
+  def about
+  end
+
+  def contact
+  end
+end
+#..............................
+
+もちろん、current_userメソッドはユーザーがログインしているときしか使えません。
+したがって、@micropost変数もログインしているときのみ定義されるようになります。
+
+リスト 13.39を動かすためのもう1つの変更は、エラーメッセージのパーシャルを再定義することです。
+でなければ、リスト 13.39の次のコードが動きません。
+
+<%= render 'shared/error_messages', object: f.object %>
+リスト 7.20ではエラーメッセージパーシャルが@user変数を直接参照していたことを思い出してください。
+今回は代わりに@micropost変数を使う必要があります。
+これらのケースをまとめると、フォーム変数fをf.objectとすることによって、関連付けられたオブジェクトにアクセスすることができます。
+したがって、
+
+form_for(@user) do |f|
+上のようにf.objectが@userとなる場合と、
+
+form_for(@micropost) do |f|
+上のようにf.objectが@micropostになる場合などがあります。
+
+パーシャルにオブジェクトを渡すために、値がオブジェクトで、キーがパーシャルでの変数名と同じハッシュを利用します。
+これで、リスト 13.39の2行目のコードが完成します。
+言い換えると、object: f.objectはerror_messagesパーシャルの中でobjectという変数名を作成してくれるので、この変数を使ってエラーメッセージを更新すればよいということです (リスト 13.41)。
+
+##..............................
+リスト 13.41: Userオブジェクト以外でも動作するようにerror_messagesパーシャルを更新する red
+#...............................
+app/views/shared/_error_messages.html.erb
+ <% if object.errors.any? %>
+  <div id="error_explanation">
+    <div class="alert alert-danger">
+      The form contains <%= pluralize(object.errors.count, "error") %>.
+    </div>
+    <ul>
+    <% object.errors.full_messages.each do |msg| %>
+      <li><%= msg %></li>
+    <% end %>
+    </ul>
+  </div>
+<% end %>
+#..............................
+
+この時点でテストを走らせてみてください。
+テストが redのままになっています。
+
+##..............................
+リスト 13.42: red
+#...............................
+$ rails test
+#..............................
+
+なぜ失敗しているのでしょうか。
+ヒントはerror_messagesパーシャルの他の出現場所です。
+このパーシャルは他の場所でも使われていたため、ユーザー登録 (リスト 7.20)、パスワード再設定 (リスト 12.14)、そしてユーザー編集 (リスト 10.2) のそれぞれのビューを更新する必要があったのです。
+各ビューを更新した結果を、リスト 13.43、リスト 13.45、リスト 13.44に示します。
+
+##..............................
+リスト 13.43: ユーザー登録時のエラー表示を更新する
+#...............................
+app/views/users/new.html.erb
+ <% provide(:title, 'Sign up') %>
+<h1>Sign up</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user) do |f| %>
+      <%= render 'shared/error_messages', object: f.object %>
+      <%= f.label :name %>
+      <%= f.text_field :name, class: 'form-control' %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+      <%= f.submit "Create my account", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+##..............................
+リスト 13.44: ユーザー編集時のエラー表示を更新する
+#...............................
+app/views/users/edit.html.erb
+ <% provide(:title, "Edit user") %>
+<h1>Update your profile</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user) do |f| %>
+      <%= render 'shared/error_messages', object: f.object %>
+
+      <%= f.label :name %>
+      <%= f.text_field :name, class: 'form-control' %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+      <%= f.submit "Save changes", class: "btn btn-primary" %>
+    <% end %>
+
+    <div class="gravatar_edit">
+      <%= gravatar_for @user %>
+      <a href="http://gravatar.com/emails">change</a>
+    </div>
+  </div>
+</div>
+#..............................
+
+##..............................
+リスト 13.45: パスワード再設定時のエラー表示を更新する
+#...............................
+app/views/password_resets/edit.html.erb
+ <% provide(:title, 'Reset password') %>
+<h1>Password reset</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user, url: password_reset_path(params[:id])) do |f| %>
+      <%= render 'shared/error_messages', object: f.object %>
+
+      <%= hidden_field_tag :email, @user.email %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+      <%= f.submit "Update password", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+これで、すべてのテストが greenになるはずです。
+
+$ rails test
+さらに、この章で作成したすべてのHTMLが適切に表示されるようになったはずです。
+最終的なフォームを図 13.11に、投稿エラーが表示されたフォームを図 13.12に示します。
+
+
+#.....................
+images/figures/home_with_form_3rd_edition
+  ==> home_with_form_3rd_edition.png
+図 13.11: 新しいマイクロポストフォームのあるHomeページ
+#.....................
+
+
+#.....................
+images/figures/home_form_errors_3rd_edition
+  ==> home_form_errors_3rd_edition.png
+図 13.12: エラーが表示されたHomeページ
+#.....................
+
+演習
+Homeページをリファクタリングして、if-else文の分岐のそれぞれに対してパーシャルを作ってみましょう。
+
+#-----------------------------------------------------
+[__ 13.3.3 ] フィードの原型
+#-----------------------------------------------------
+
+マイクロポスト投稿フォームが動くようになりましたが、今の段階では投稿した内容をすぐに見ることができません。
+というのも、Homeページにまだマイクロポストを表示する部分が実装されていないからです。
+
+図 13.11のフォームが正しく動作しているかどうかを確認したい場合、正しいエントリーを投稿した後、プロフィールページに移動してポストを表示すればよいのですが、これはかなり面倒な作業です。
+図 13.13のモックアップで示したような、ユーザー自身のポストを含むマイクロポストのフィードがないと不便です (第14章ではフィードを汎用化し、フォローしているユーザーのマイクロポストもフィードに表示する予定です)。
+
+
+#.....................
+images/figures/proto_feed_mockup_3rd_edition
+  ==> proto_feed_mockup_3rd_edition.png
+図 13.13: 試作フィードがあるHomeページのモックアップ
+#.....................
+
+すべてのユーザーがフィードを持つので、feedメソッドはUserモデルで作るのが自然です。
+フィードの原型では、まずは現在ログインしているユーザーのマイクロポストをすべて取得してきます。
+なお、次章で完全なフィードを実装するため、今回は11.3.3.1で紹介したwhereメソッドでこれを実現します。
+Micropostモデルに変更を加えた結果を、リスト 13.46に示します11。
+
+##..............................
+リスト 13.46: マイクロポストのステータスフィードを実装するための準備
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # 試作feedの定義
+  # 完全な実装は次章の「ユーザーをフォローする」を参照
+  def feed
+    Micropost.where("user_id = ?", id)
+  end
+
+    private
+    .
+    .
+    .
+end
+#..............................
+
+次のコードで使われている疑問符は、セキュリティ上重要な役割を果たしています。
+
+Micropost.where("user_id = ?", id)
+上の疑問符があることで、SQLクエリに代入する前にidがエスケープされるため、SQLインジェクション (SQL Injection) と呼ばれる深刻なセキュリティホールを避けることができます。
+この場合のid属性は単なる整数 (すなわちself.idはユーザーのid) であるため危険はありませんが、SQL文に変数を代入する場合は常にエスケープする習慣をぜひ身につけてください。
+
+注意深い読者は、リスト 13.46のコードは本質的に次のコードと同等であることに気付くかもしれません。
+
+def feed
+  microposts
+end
+上のコードを使わずにあえてリスト 13.46のコードを使ったのは、第14章で必要となる完全なステータスフィードで応用が効くためです。
+
+サンプルアプリケーションでフィードを使うために、現在のユーザーのページ分割されたフィードに@feed_itemsインスタンス変数を追加し (リスト 13.47)、次にフィード用のパーシャル (リスト 13.48) をHomeページに追加します。
+Homeページに変更を加えた結果はリスト 13.49で示します。
+このとき、ユーザーがログインしているかどうかを調べる後置if文が変化している点に注目してください。
+すなわち、リスト 13.47では、
+
+@micropost = current_user.microposts.build if logged_in?
+上のリスト 13.40のコードが、次のような前置if文に変わっています。
+
+  if logged_in?
+    @micropost  = current_user.microposts.build
+    @feed_items = current_user.feed.paginate(page: params[:page])
+  end
+(訳注: 1行のときは後置if文、2行以上のときは前置if文を使うのがRubyの慣習です。)
+
+##..............................
+リスト 13.47: homeアクションにフィードのインスタンス変数を追加する
+#...............................
+app/controllers/static_pages_controller.rb
+ class StaticPagesController < ApplicationController
+
+  def home
+    if logged_in?
+      @micropost  = current_user.microposts.build
+      @feed_items = current_user.feed.paginate(page: params[:page])
+    end
+  end
+
+  def help
+  end
+
+  def about
+  end
+
+  def contact
+  end
+end
+#..............................
+
+##..............................
+リスト 13.48: ステータスフィードのパーシャル
+#...............................
+app/views/shared/_feed.html.erb
+ <% if @feed_items.any? %>
+  <ol class="microposts">
+    <%= render @feed_items %>
+  </ol>
+  <%= will_paginate @feed_items %>
+<% end %>
+#..............................
+
+ステータスフィードのパーシャルは、Micropostのパーシャル (リスト 13.22) とは異なっている点に注目してください。
+
+<%= render @feed_items %>
+このとき、@feed_itemsの各要素がMicropostクラスを持っていたため、RailsはMicropostのパーシャルを呼び出すことができました。
+このように、Railsは対応する名前のパーシャルを、渡されたリソースのディレクトリ内から探しにいくことができます。
+
+app/views/microposts/_micropost.html.erb
+後は、いつものようにフィードパーシャルを表示すればHomeページにフィードを追加できます (リスト 13.49)。
+この結果はHomeページのフィードとして表示されます (図 13.14)。
+
+##..............................
+リスト 13.49: Homeページにステータスフィードを追加する
+#...............................
+app/views/static_pages/home.html.erb
+ <% if logged_in? %>
+  <div class="row">
+    <aside class="col-md-4">
+      <section class="user_info">
+        <%= render 'shared/user_info' %>
+      </section>
+      <section class="micropost_form">
+        <%= render 'shared/micropost_form' %>
+      </section>
+    </aside>
+    <div class="col-md-8">
+      <h3>Micropost Feed</h3>
+      <%= render 'shared/feed' %>
+    </div>
+  </div>
+<% else %>
+  .
+  .
+  .
+<% end %>
+#..............................
+
+
+#.....................
+images/figures/home_with_proto_feed_3rd_edition
+  ==> home_with_proto_feed_3rd_edition.png
+図 13.14: 試作フィードのあるHomeページ
+#.....................
+
+現時点では、新しいマイクロポストの作成は図 13.15で示したように期待どおりに動作しています。
+ただしささいなことではありますが、マイクロポストの投稿が失敗すると、 Homeページは@feed_itemsインスタンス変数を期待しているため、現状では壊れてしまいます。
+最も簡単な解決方法は、リスト 13.50のように空の配列を渡しておくことです。
+残念ですが、この場合はページ分割されたフィードを返してもうまく動きません。
+動かない理由を確認したい方は、実際に実装してページネーションのリンクをクリックしてみてください。
+
+
+#.....................
+images/figures/micropost_created_3rd_edition
+  ==> micropost_created_3rd_edition.png
+図 13.15: 新しいマイクロポストを作成した直後のHomeページ
+#.....................
+
+##..............................
+リスト 13.50: createアクションに空の@feed_itemsインスタンス変数を追加する
+#...............................
+app/controllers/microposts_controller.rb
+ class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+
+  def create
+    @micropost = current_user.microposts.build(micropost_params)
+    if @micropost.save
+      flash[:success] = "Micropost created!"
+      redirect_to root_url
+    else
+      @feed_items = []
+      render 'static_pages/home'
+    end
+  end
+
+  def destroy
+  end
+
+  private
+
+    def micropost_params
+      params.require(:micropost).permit(:content)
+    end
+end
+#..............................
+
+演習
+新しく実装したマイクロポストの投稿フォームを使って、実際にマイクロポストを投稿してみましょう。
+Railsサーバーのログ内にあるINSERT文では、どういった内容をデータベースに送っているでしょうか? 確認してみてください。
+コンソールを開き、user変数にデータベース上の最初のユーザーを代入してみましょう。
+その後、Micropost.where("user_id = ?", user.id)とuser.microposts、そしてuser.feedをそれぞれ実行してみて、実行結果がすべて同じであることを確認してみてください。
+ヒント: ==で比較すると結果が同じかどうか簡単に判別できます。
+
+#-----------------------------------------------------
+[__ 13.3.4 ] マイクロポストを削除する
+#-----------------------------------------------------
+
+最後の機能として、マイクロポストリソースにポストを削除する機能を追加します。
+これはユーザー削除と同様に(10.4.2)、"delete" リンクで実現します (図 13.16)。
+ユーザーの削除は管理者ユーザーのみが行えるように制限されていたのに対し、今回は自分が投稿したマイクロポストに対してのみ削除リンクが動作するようにします。
+
+
+#.....................
+images/figures/micropost_delete_links_mockup_3rd_edition
+  ==> micropost_delete_links_mockup_3rd_edition.png
+図 13.16: マイクロポストの削除リンクと試作フィードのモックアップ
+#.....................
+
+最初のステップとして、マイクロポストのパーシャル (リスト 13.22) に削除リンクを追加します。
+作成したコードをリスト 13.51に示します。
+
+##..............................
+リスト 13.51: マイクロポストのパーシャルに削除リンクを追加する
+#...............................
+app/views/microposts/_micropost.html.erb
+ <li id="micropost-<%= micropost.id %>">
+  <%= link_to gravatar_for(micropost.user, size: 50), micropost.user %>
+  <span class="user"><%= link_to micropost.user.name, micropost.user %></span>
+  <span class="content"><%= micropost.content %></span>
+  <span class="timestamp">
+    Posted <%= time_ago_in_words(micropost.created_at) %> ago.
+    <% if current_user?(micropost.user) %>
+      <%= link_to "delete", micropost, method: :delete,
+                                       data: { confirm: "You sure?" } %>
+    <% end %>
+  </span>
+</li>
+#..............................
+
+次に、Micropostsコントローラのdestroyアクションを定義しましょう。
+これも、ユーザーにおける実装 (リスト 10.59) とだいたい同じです。
+大きな違いは、admin_userフィルターで@user変数を使うのではなく、関連付けを使ってマイクロポストを見つけるようにしている点です。
+これにより、あるユーザーが他のユーザーのマイクロポストを削除しようとすると、自動的に失敗するようになります。
+具体的には、correct_userフィルター内でfindメソッドを呼び出すことで、現在のユーザーが削除対象のマイクロポストを保有しているかどうかを確認します。
+作成したコードをリスト 13.52に示します。
+
+##..............................
+リスト 13.52: Micropostsコントローラのdestroyアクション
+#...............................
+app/controllers/microposts_controller.rb
+ class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+  before_action :correct_user,   only: :destroy
+  .
+  .
+  .
+  def destroy
+    @micropost.destroy
+    flash[:success] = "Micropost deleted"
+    redirect_to request.referrer || root_url
+  end
+
+  private
+
+    def micropost_params
+      params.require(:micropost).permit(:content)
+    end
+
+    def correct_user
+      @micropost = current_user.microposts.find_by(id: params[:id])
+      redirect_to root_url if @micropost.nil?
+    end
+end
+#..............................
+
+このとき、 リスト 13.52のdestroyメソッドではリダイレクトを使っている点に注目してください。
+
+request.referrer || root_url
+ここではrequest.referrerというメソッドを使っています12。
+このメソッドはフレンドリーフォワーディングのrequest.url変数 (10.2.3) と似ていて、一つ前のURLを返します (今回の場合、Homeページになります)13。
+このため、マイクロポストがHomeページから削除された場合でもプロフィールページから削除された場合でも、request.referrerを使うことでDELETEリクエストが発行されたページに戻すことができるので、非常に便利です。
+ちなみに、元に戻すURLが見つからなかった場合でも (例えばテストではnilが返ってくることもあります)、リスト 13.52の||演算子でroot_urlをデフォルトに設定しているため、大丈夫です。
+(リスト 9.24で定義したデフォルトオプションと比較してみてください。)
+
+これらのコードにより、上から2番目のマイクロポストを削除すると、図 13.17のようにうまく動くはずです。
+
+
+#.....................
+images/figures/home_post_delete_3rd_edition
+  ==> home_post_delete_3rd_edition.png
+図 13.17: 2番目に新しいマイクロポストを削除した後のユーザーHomeページ
+#.....................
+
+演習
+マイクロポストを作成し、その後、作成したマイクロポストを削除してみましょう。
+次に、Railsサーバーのログを見てみて、DELETE文の内容を確認してみてください。
+redirect_to request.referrer || root_urlの行をredirect_back(fallback_location: root_url)と置き換えてもうまく動くことを、ブラウザを使って確認してみましょう (このメソッドはRails 5から新たに導入されました)。
+
+#-----------------------------------------------------
+[__ 13.3.5 ] フィード画面のマイクロポストをテストする
+#-----------------------------------------------------
+
+13.3.4のコードで、Micropostモデルとそのインターフェースが完成しました。
+ 残っている箇所は、Micropostsコントローラの認可をチェックする短いテストと、それらをまとめる統合テストを書くことです。
+
+まずはマイクロポスト用のfixtureに、別々のユーザーに紐付けられたマイクロポストを追加していきます (リスト 13.53)。
+(今はこのうちの1つしか使いませんが、あとで他のマイクロポストも利用していきます。)
+
+##..............................
+リスト 13.53: 別のユーザーに所属しているマイクロポストを追加する
+#...............................
+test/fixtures/microposts.yml
+ .
+.
+.
+ants:
+  content: "Oh, is that what you want? Because that's how you get ants!"
+  created_at: <%= 2.years.ago %>
+  user: archer
+
+zone:
+  content: "Danger zone!"
+  created_at: <%= 3.days.ago %>
+  user: archer
+
+tone:
+  content: "I'm sorry. Your words made sense, but your sarcastic tone did not."
+  created_at: <%= 10.minutes.ago %>
+  user: lana
+
+van:
+  content: "Dude, this van's, like, rolling probable cause."
+  created_at: <%= 4.hours.ago %>
+  user: lana
+#..............................
+
+次に、自分以外のユーザーのマイクロポストは削除をしようとすると、適切にリダイレクトされることをテストで確認します (リスト 13.54)。
+
+##..............................
+リスト 13.54: 間違ったユーザーによるマイクロポスト削除に対してテストする green
+#...............................
+test/controllers/microposts_controller_test.rb
+ require 'test_helper'
+
+class MicropostsControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @micropost = microposts(:orange)
+  end
+
+  test "should redirect create when not logged in" do
+    assert_no_difference 'Micropost.count' do
+      post microposts_path, params: { micropost: { content: "Lorem ipsum" } }
+    end
+    assert_redirected_to login_url
+  end
+
+  test "should redirect destroy when not logged in" do
+    assert_no_difference 'Micropost.count' do
+      delete micropost_path(@micropost)
+    end
+    assert_redirected_to login_url
+  end
+
+  test "should redirect destroy for wrong micropost" do
+    log_in_as(users(:michael))
+    micropost = microposts(:ants)
+    assert_no_difference 'Micropost.count' do
+      delete micropost_path(micropost)
+    end
+    assert_redirected_to root_url
+  end
+end
+#..............................
+
+最後に、統合テストを書きます。
+今回の統合テストでは、ログイン、マイクロポストのページ分割の確認、無効なマイクロポストを投稿、有効なマイクロポストを投稿、マイクロポストの削除、そして他のユーザーのマイクロポストには [delete] リンクが表示されないことを確認、といった順でテストしていきます。
+いつものように、統合テストを生成するところから始めましょう。
+
+$ rails generate integration_test microposts_interface
+      invoke  test_unit
+      create    test/integration/microposts_interface_test.rb
+先ほどの順で書いた統合テストは、リスト 13.55のようになります。
+リスト 13.12で書いたコードと、先ほどのステップが結合されている点に注意してください。
+
+##..............................
+リスト 13.55: マイクロポストのUIに対する統合テスト green
+#...............................
+test/integration/microposts_interface_test.rb
+ require 'test_helper'
+
+class MicropostsInterfaceTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+
+  test "micropost interface" do
+    log_in_as(@user)
+    get root_path
+    assert_select 'div.pagination'
+    # 無効な送信
+    assert_no_difference 'Micropost.count' do
+      post microposts_path, params: { micropost: { content: "" } }
+    end
+    assert_select 'div#error_explanation'
+    # 有効な送信
+    content = "This micropost really ties the room together"
+    assert_difference 'Micropost.count', 1 do
+      post microposts_path, params: { micropost: { content: content } }
+    end
+    assert_redirected_to root_url
+    follow_redirect!
+    assert_match content, response.body
+    # 投稿を削除する
+    assert_select 'a', text: 'delete'
+    first_micropost = @user.microposts.paginate(page: 1).first
+    assert_difference 'Micropost.count', -1 do
+      delete micropost_path(first_micropost)
+    end
+    # 違うユーザーのプロフィールにアクセス (削除リンクがないことを確認)
+    get user_path(users(:archer))
+    assert_select 'a', text: 'delete', count: 0
+  end
+end
+#..............................
+
+既にアプリケーション側のコードは実装してあるので、このテストは greenになるはずです。
+
+##..............................
+リスト 13.56: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 13.55で示した４つのコメント (「無効な送信」など) のそれぞれに対して、テストが正しく動いているか確認してみましょう。
+具体的には、対応するアプリケーション側のコードをコメントアウトし、テストが redになることを確認し、元に戻すと greenになることを確認してみましょう。
+サイドバーにあるマイクロポストの合計投稿数をテストしてみましょう。
+このとき、単数形 (micropost) と複数形 (microposts) が正しく表示されているかどうかもテストしてください。
+ヒント: リスト 13.57を参考にしてみてください。
+##..............................
+リスト 13.57: サイドバーでマイクロポストの投稿数をテストするためのテンプレート
+#...............................
+test/integration/microposts_interface_test.rb
+ require 'test_helper'
+
+class MicropostInterfaceTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+  .
+  .
+  .
+  test "micropost sidebar count" do
+    log_in_as(@user)
+    get root_path
+    assert_match "#{FILL_IN} microposts", response.body
+    # まだマイクロポストを投稿していないユーザー
+    other_user = users(:malory)
+    log_in_as(other_user)
+    get root_path
+    assert_match "0 microposts", response.body
+    other_user.microposts.create!(content: "A micropost")
+    get root_path
+    assert_match FILL_IN, response.body
+  end
+end
+#..............................
+
+
+#-----------------------------
+[_ 13.4 ] マイクロポストの画像投稿
+#-----------------------------
+
+ここまででマイクロポストに関する基本的な操作はすべて実装できました。
+この節では、応用編として画像付きマイクロポストを投稿できるようにしてみます。
+手順としては、まずは開発環境用のβ版を実装し、その後、いくつかの改善をとおして本番環境用の完成版を実装します。
+
+画像アップロード機能を追加するためには、2つの視覚的な要素が必要です。
+1つは画像をアップロードするためのフォーム、もう1つは投稿された画像そのものです。
+[Upload image] ボタンと画像付きマイクロポストのモックアップを図 13.18に示します14。
+
+
+#.....................
+images/figures/micropost_image_mockup
+  ==> micropost_image_mockup.png
+図 13.18: 画像付きマイクロポストを投稿したときのモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 13.4.1 ] 基本的な画像アップロード
+#-----------------------------------------------------
+
+投稿した画像を扱ったり、その画像をMicropostモデルと関連付けするために、今回はCarrierWaveという画像アップローダーを使います。
+まずはcarrierwave gemをGemfileに追加しましょう (リスト 13.58)15。
+このとき、リスト 13.58ではmini_magick gemとfog gemsも含めている点に注目してください。
+これらのgemは画像をリサイズしたり (13.4.3)、本番環境で画像をアップロードする (13.4.4) ために使います。
+
+##..............................
+リスト 13.58: GemfileにCarrierWaveを追加する
+#...............................
+source 'https://rubygems.org'
+
+gem 'rails',                   '5.1.6'
+gem 'bcrypt',                  '3.1.12'
+gem 'faker',                   '1.7.3'
+gem 'carrierwave',             '1.2.2'
+gem 'mini_magick',             '4.7.0'
+gem 'will_paginate',           '3.1.5'
+gem 'bootstrap-will_paginate', '1.0.0'
+.
+.
+.
+group :production do
+  gem 'pg',  '0.20.0'
+  gem 'fog', '1.42'
+  end
+.
+.
+.
+#..............................
+
+次に、いつものようにbundle installを実行します。
+
+$ bundle install
+CarrierWaveを導入すると、Railsのジェネレーターで画像アップローダーが生成できるようになります。
+早速、次のコマンドを実行してみましょう (画像のことをimageとすると一般的過ぎるので、今回はpictureと呼ぶことにします)16。
+
+$ rails generate uploader Picture
+CarrierWaveでアップロードされた画像は、Active Recordモデルの属性と関連付けされているべきです。
+関連付けされる属性には画像のファイル名が格納されるため、String型にしておきます。
+拡張したマイクロポストのデータモデルを、図 13.19に示します。
+
+
+#.....................
+images/figures/micropost_model_picture
+  ==> micropost_model_picture.png
+図 13.19: picture属性を追加したマイクロポストのデータモデル
+#.....................
+
+必要となるpicture属性をMicropostモデルに追加するために、マイグレーションファイルを生成し、開発環境のデータベースに適用します。
+
+$ rails generate migration add_picture_to_microposts picture:string
+$ rails db:migrate
+CarrierWaveに画像と関連付けたモデルを伝えるためには、mount_uploaderというメソッドを使います。
+このメソッドは、引数に属性名のシンボルと生成されたアップローダーのクラス名を取ります。
+
+mount_uploader :picture, PictureUploader
+(picture_uploader.rbというファイルでPictureUploaderクラスが定義されています。
+13.4.2で修正しますが、今はデフォルトのままで大丈夫です。
+) Micropostモデルにアップローダーを追加した結果をリスト 13.59に示します。
+
+##..............................
+リスト 13.59: Micropostモデルに画像を追加する
+#...............................
+app/models/micropost.rb
+ class Micropost < ApplicationRecord
+  belongs_to :user
+  default_scope -> { order(created_at: :desc) }
+  mount_uploader :picture, PictureUploader
+  validates :user_id, presence: true
+  validates :content, presence: true, length: { maximum: 140 }
+end
+#..............................
+
+システムによっては、ここで一旦Railsサーバーを再起動させる必要があります。
+再起動させたらテストスイートを走らせてみてください。
+ greenになるはずです。
+(ただし、3.6.2で説明したGuardを使っている場合は、再起動させるだけではうまく動かないかもしれません。
+その場合はターミナルから一旦抜けて、新しいターミナルでGuardを再実行してみてください。)
+
+図 13.18のようにHomeページにアップローダーを追加するためには、マイクロポストのフォームにfile_fieldタグを含める必要があります (リスト 13.60)。
+17
+
+##..............................
+リスト 13.60: マイクロポスト投稿フォームに画像アップローダーを追加する
+#...............................
+app/views/shared/_micropost_form.html.erb
+ <%= form_for(@micropost) do |f| %>
+  <%= render 'shared/error_messages', object: f.object %>
+  <div class="field">
+    <%= f.text_area :content, placeholder: "Compose new micropost..." %>
+  </div>
+  <%= f.submit "Post", class: "btn btn-primary" %>
+  <span class="picture">
+    <%= f.file_field :picture %>
+  </span>
+<% end %>
+#..............................
+
+最後に、Webから更新できる許可リストにpicture属性を追加しましょう。
+追加すると、micropost_paramsメソッドはリスト 13.61のようになります。
+
+##..............................
+リスト 13.61: pictureを許可された属性のリストに追加する
+#...............................
+app/controllers/microposts_controller.rb
+ class MicropostsController < ApplicationController
+  before_action :logged_in_user, only: [:create, :destroy]
+  before_action :correct_user,   only: :destroy
+  .
+  .
+  .
+  private
+
+    def micropost_params
+      params.require(:micropost).permit(:content, :picture)
+    end
+
+    def correct_user
+      @micropost = current_user.microposts.find_by(id: params[:id])
+      redirect_to root_url if @micropost.nil?
+    end
+end
+#..............................
+
+一度画像がアップロードされれば、Micropostパーシャルのimage_tagヘルパーでその画像を描画できるようになります (リスト 13.62)。
+また、画像の無い (テキストのみの) マイクロポストでは画像を表示させないようにするために、picture?という論理値を返すメソッドを使っている点に注目してください。
+このメソッドは、画像用の属性名に応じて、CarrierWaveが自動的に生成してくれるメソッドです。
+手動で画像付きの投稿をしてみると、図 13.20のようになります。
+なお、画像アップロードに対するテストは、演習に回すことにします (13.4.1.1)。
+
+##..............................
+リスト 13.62: マイクロポストの画像表示を追加する
+#...............................
+app/views/microposts/_micropost.html.erb
+ <li id="micropost-<%= micropost.id %>">
+  <%= link_to gravatar_for(micropost.user, size: 50), micropost.user %>
+  <span class="user"><%= link_to micropost.user.name, micropost.user %></span>
+  <span class="content">
+    <%= micropost.content %>
+    <%= image_tag micropost.picture.url if micropost.picture? %>
+  </span>
+  <span class="timestamp">
+    Posted <%= time_ago_in_words(micropost.created_at) %> ago.
+    <% if current_user?(micropost.user) %>
+      <%= link_to "delete", micropost, method: :delete,
+                                       data: { confirm: "You sure?" } %>
+    <% end %>
+  </span>
+</li>
+#..............................
+
+
+#.....................
+images/figures/microposts_with_image_4th_ed
+  ==> microposts_with_image_4th_ed.png
+図 13.20: 画像付きマイクロポストを投稿した結果
+#.....................
+
+演習
+画像付きのマイクロポストを投稿してみましょう。
+もしかして、大きすぎる画像が表示されてしまいましたか? (心配しないでください、次の13.4.3でこの問題を直します)。
+リスト 13.63に示すテンプレートを参考に、13.4で実装した画像アップローダーをテストしてください。
+テストの準備として、まずはサンプル画像をfixtureディレクトリに追加してください (コマンド例: cp app/assets/images/rails.png test/fixtures/)。
+リスト 13.63で追加したテストでは、Homeページにあるファイルアップロードと、投稿に成功した時に画像が表示されているかどうかをチェックしています。
+なお、テスト内にあるfixture_file_uploadというメソッドは、fixtureで定義されたファイルをアップロードする特別なメソッドです18。
+ヒント: picture属性が有効かどうかを確かめるときは、11.3.3で紹介したassignsメソッドを使ってください。
+このメソッドを使うと、投稿に成功した後にcreateアクション内のマイクロポストにアクセスするようになります。
+##..............................
+リスト 13.63: 画像アップロードをテストするためのテンプレート
+#...............................
+test/integration/microposts_interface_test.rb
+ require 'test_helper'
+
+class MicropostInterfaceTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+
+  test "micropost interface" do
+    log_in_as(@user)
+    get root_path
+    assert_select 'div.pagination'
+    assert_select 'input[type=FILL_IN]'
+    # 無効な送信
+    post microposts_path, params: { micropost: { content: "" } }
+    assert_select 'div#error_explanation'
+    # 有効な送信
+    content = "This micropost really ties the room together"
+    picture = fixture_file_upload('test/fixtures/rails.png', 'image/png')
+    assert_difference 'Micropost.count', 1 do
+      post microposts_path, params: { micropost:
+                                      { content: content,
+                                        picture: FILL_IN } }
+    end
+    assert FILL_IN.picture?
+    follow_redirect!
+    assert_match content, response.body
+    # 投稿を削除する
+    assert_select 'a', 'delete'
+    first_micropost = @user.microposts.paginate(page: 1).first
+    assert_difference 'Micropost.count', -1 do
+      delete micropost_path(first_micropost)
+    end
+    # 違うユーザーのプロフィールにアクセスする
+    get user_path(users(:archer))
+    assert_select 'a', { text: 'delete', count: 0 }
+  end
+  .
+  .
+  .
+end
+#..............................
+
+
+#-----------------------------------------------------
+[__ 13.4.2 ] 画像の検証
+#-----------------------------------------------------
+
+13.4.1のアップローダーも悪くはありませんが、いくつかの目立つ欠点があります。
+例えば、アップロードされた画像に対する制限がないため、もしユーザーが巨大なファイルを上げたり、無効なファイルを上げると問題が発生してしまいます。
+この欠点を直すために、画像サイズやフォーマットに対するバリデーションを実装し、サーバー用とクライアント (ブラウザ) 用の両方に追加しましょう。
+
+最初のバリデーションでは、有効な画像の種類を制限していきますが、これはCarrierWaveのアップローダーの中に既にヒントがあります。
+生成されたアップローダーの中にコメントアウトされたコードがありますが、ここのコメントアウトを取り消すことで、画像のファイル名から有効な拡張子 (PNG/GIF/JPEGなど) を検証することができます (リスト 13.64)。
+
+##..............................
+リスト 13.64: 画像フォーマットのバリデーション
+#...............................
+app/uploaders/picture_uploader.rb
+ class PictureUploader < CarrierWave::Uploader::Base
+  storage :file
+
+  # アップロードファイルの保存先ディレクトリは上書き可能
+  # 下記はデフォルトの保存先  
+  def store_dir
+    "uploads/#{model.class.to_s.underscore}/#{mounted_as}/#{model.id}"
+  end
+
+  # アップロード可能な拡張子のリスト
+  def extension_whitelist
+    %w(jpg jpeg gif png)
+  end
+end
+#..............................
+
+2つ目のバリデーションでは、画像のサイズを制御します。
+これはMicropostモデルに書き足していきます。
+先ほどのバリデーションとは異なり、ファイルサイズに対するバリデーションはRailsの既存のオプション (presenceやlengthなど) にはありません。
+したがって、今回は手動でpicture_sizeという独自のバリデーションを定義します。
+結果はリスト 13.65のとおりです。
+独自のバリデーションを定義するために、今まで使っていたvalidatesメソッドではなく、validateメソッドを使っている点に注目してください。
+
+##..............................
+リスト 13.65: 画像に対するバリデーションを追加する
+#...............................
+app/models/micropost.rb
+ class Micropost < ApplicationRecord
+  belongs_to :user
+  default_scope -> { order(created_at: :desc) }
+  mount_uploader :picture, PictureUploader
+  validates :user_id, presence: true
+  validates :content, presence: true, length: { maximum: 140 }
+  validate  :picture_size
+
+  private
+
+    # アップロードされた画像のサイズをバリデーションする
+    def picture_size
+      if picture.size > 5.megabytes
+        errors.add(:picture, "should be less than 5MB")
+      end
+    end
+end
+#..............................
+
+このvalidateメソッドでは、引数にシンボル (:picture_size) を取り、そのシンボル名に対応したメソッドを呼び出します。
+また、呼び出されたpicture_sizeメソッドでは、5MBを上限とし (文法はコラム 9.1を参照)、それを超えた場合はカスタマイズしたエラーメッセージをerrorsコレクションに追加しています (errorsについては6.2.2で紹介しました)。
+
+リスト 13.64やリスト 13.65で定義した画像のバリデーションをビューに組み込むために、クライアント側に2つの処理を追加しましょう。
+まずはフォーマットのバリデーションを反映するためには、file_fieldタグにacceptパラメータを付与して使います。
+
+<%= f.file_field :picture, accept: 'image/jpeg,image/gif,image/png' %>
+このときacceptパラメータでは、リスト 13.64で許可したファイル形式を、MIMEタイプで指定するようにします。
+
+次に、大きすぎるファイルサイズに対して警告を出すために、ちょっとしたJavaScript (正確にはjQuery) を書き加えます。
+こうすることで、長すぎるアップロード時間を防いだり、サーバーへの負荷を抑えたりすることに繋がります。
+
+$('#micropost_picture').bind('change', function() {
+  var size_in_megabytes = this.files[0].size/1024/1024;
+  if (size_in_megabytes > 5) {
+    alert('Maximum file size is 5MB. Please choose a smaller file.');
+  }
+});
+jQueryは本書のトピックではないので詳細な解説はしませんが、上のコードでは (ハッシュマーク#から分かるように) CSS idのmicropost_pictureを含んだ要素を見つけ出し、この要素を監視しています。
+そしてこのidを持った要素とは、リスト 13.60にあるマイクロポストのフォームを指します (なお、ブラウザ上で画面を右クリックし、インスペクターで要素を調べることで確認できます)。
+つまり、このCSS idを持つ要素が変化したとき、このjQueryの関数が動き出します。
+そして、もしファイルサイズが大きすぎた場合、alertメソッドで警告を出すといった仕組みです19。
+
+これらの追加的なチェック機能をまとめると、リスト 13.66のようになります20。
+
+##..............................
+リスト 13.66: ファイルサイズをjQueryでチェックする
+#...............................
+app/views/shared/_micropost_form.html.erb
+ <%= form_for(@micropost) do |f| %>
+  <%= render 'shared/error_messages', object: f.object %>
+  <div class="field">
+    <%= f.text_area :content, placeholder: "Compose new micropost..." %>
+  </div>
+  <%= f.submit "Post", class: "btn btn-primary" %>
+  <span class="picture">
+    <%= f.file_field :picture, accept: 'image/jpeg,image/gif,image/png' %>
+  </span>
+<% end %>
+
+<script type="text/javascript">
+  $('#micropost_picture').bind('change', function() {
+    var size_in_megabytes = this.files[0].size/1024/1024;
+    if (size_in_megabytes > 5) {
+      alert('Maximum file size is 5MB. Please choose a smaller file.');
+    }
+  });
+</script>
+#..............................
+
+既にお気づきの読者もいるかもしれませんが、リスト 13.66のようなコードでは大きすぎるファイルのアップロードを完全には阻止できません。
+例えば、ユーザーはアラートを無視してアップロードを強行する、といったことが可能です。
+もし本書がjQueryチュートリアルであれば、この問題点と解決策を丁寧に説明しているところですが、本書はRailsチュートリアルなので、今回は「リスト 13.66のようなコードでは実装はまだ不完全である」という点だけ覚えておけば十分です。
+また、仮に送信フォームを使った投稿をうまく制限できても、ブラウザのインスペクタ機能でJavaScriptをいじったり、curlなどを使って直接POSTリクエストを送信する場合には対応しきれません。
+こういった場合にも対応できるようにするため、リスト 13.65で実装したサーバー側のバリデーションが重要なのです。
+
+演習
+5MB以上の画像ファイルを送信しようとした場合、どうなりますか?
+無効な拡張子のファイルを送信しようとした場合、どうなりますか?
+
+#-----------------------------------------------------
+[__ 13.4.3 ] 画像のリサイズ
+#-----------------------------------------------------
+
+ファイルサイズに対するバリデーション (13.4.2) はうまくいきましたが、画像サイズ (縦横の長さ) に対する制限はないので、大きすぎる画像サイズがアップロードされると図 13.21のようにレイアウトが壊れてしまいます。
+とはいえ、ユーザーに手元で画像サイズを変更させるのは不便です。
+なので、画像を表示させる前にサイズを変更する (リサイズする) ようにしてみましょう21。
+
+
+#.....................
+images/figures/large_uploaded_image_4th_ed
+  ==> large_uploaded_image_4th_ed.png
+図 13.21: 恐ろしく大きなアップロード画像
+#.....................
+
+画像をリサイズするためには、画像を操作するプログラムが必要になります。
+今回はImageMagickというプログラムを使うので、これを開発環境にインストールします (13.4.4でも説明しますが、本番環境がHerokuであれば、既に本番環境でImageMagickが使えるようになっています)。
+クラウドIDEでは、次のコマンドでこのプログラムをインストールできます22。
+
+$ sudo yum install -y ImageMagick
+(もしローカル環境で開発している場合、それぞれの環境に応じてImagiMagickをインストールする手順が異なります。
+例えばMacの場合であれば、Homebrewを導入し、brew install imagemagickコマンドを使ってインストールします。
+もしインストールで躓いたら、コラム 1.1の考え方を参考にしてみてください。)
+
+次に、MiniMagickというImageMagickとRubyを繋ぐgemを使って、画像をリサイズしてみましょう。
+MiniMagickのドキュメント (英語) を見ると様々な方法でリサイズできることがわかりますが、今回はresize_to_limit: [400, 400]という方法を使います。
+これは、縦横どちらかが400pxを超えていた場合、適切なサイズに縮小するオプションです (ただし小さい画像であっても拡大はしません)。
+ちなみにCarrierWaveのMiniMagickの項目を見ると、 小さすぎる画像を引き延ばすこともできるようですが、今回は使いません。
+したがって、最終的なコードはリスト 13.67のようになります。
+これにより、大きな画像サイズでも適切にリサイズされるようになります (図 13.22)。
+
+##..............................
+リスト 13.67: 画像をリサイズするために画像アップローダーを修正する
+#...............................
+app/uploaders/picture_uploader.rb
+ class PictureUploader < CarrierWave::Uploader::Base
+  include CarrierWave::MiniMagick
+  process resize_to_limit: [400, 400]
+
+  storage :file
+
+  # アップロードファイルの保存先ディレクトリは上書き可能
+  # 下記はデフォルトの保存先  
+  def store_dir
+    "uploads/#{model.class.to_s.underscore}/#{mounted_as}/#{model.id}"
+  end
+
+  # アップロード可能な拡張子のリスト
+  def extension_whitelist
+    %w(jpg jpeg gif png)
+  end
+end
+#..............................
+
+
+#.....................
+images/figures/resized_image_4th_ed
+  ==> resized_image_4th_ed.png
+図 13.22: いい感じにリサイズされた画像
+#.....................
+
+演習
+解像度の高い画像をアップロードし、リサイズされているかどうか確認してみましょう。
+画像が長方形だった場合、リサイズはうまく行われているでしょうか?
+既にリスト 13.63のテストを追加していた場合、この時点でテストスイートを走らせるとエラーメッセージが表示されるようになるはずです。
+このエラーを取り除いてみましょう。
+ヒント: リスト 13.68にある設定ファイルを修正し、テスト時はCarrierWaveに画像のリサイズをさせないようにしてみましょう。
+##..............................
+リスト 13.68: テスト時は画像のリサイズをさせない設定
+#...............................
+config/initializers/skip_image_resizing.rb
+ if Rails.env.test?
+  CarrierWave.configure do |config|
+    config.enable_processing = false
+  end
+end
+#..............................
+
+
+#-----------------------------------------------------
+[__ 13.4.4 ] 本番環境での画像アップロード
+#-----------------------------------------------------
+
+(訳注: この項はスキップできます。
+もしうまくいかなければスキップしても問題ありません)
+
+13.4.3で実装した画像アップローダーは、開発環境で動かす分には問題ないのですが、本番環境には適していません。
+これはリスト 13.67のstorage :fileという行によって、ローカルのファイルシステムに画像を保存するようになっているからです23。
+本番環境では、ファイルシステムではなくクラウドストレージサービスに画像を保存するようにしてみましょう24。
+
+本番環境でクラウドストレージに保存するためには、リスト 13.69のようにfog gemを使うと簡単です。
+
+##..............................
+リスト 13.69: 本番環境での画像アップロードを調整する
+#...............................
+app/uploaders/picture_uploader.rb
+ class PictureUploader < CarrierWave::Uploader::Base
+  include CarrierWave::MiniMagick
+  process resize_to_limit: [400, 400]
+
+  if Rails.env.production?
+    storage :fog
+  else
+    storage :file
+  end
+
+  # アップロードファイルの保存先ディレクトリは上書き可能
+  # 下記はデフォルトの保存先  
+  def store_dir
+    "uploads/#{model.class.to_s.underscore}/#{mounted_as}/#{model.id}"
+  end
+
+  # アップロード可能な拡張子のリスト
+  def extension_whitelist
+    %w(jpg jpeg gif png)
+  end
+end
+#..............................
+
+リスト 13.69ではproduction?という論理値を返すメソッドを使っています。
+このメソッドはコラム 7.1でも紹介しましたが、これを使うと環境毎に保存先を切り替えることができます。
+
+if Rails.env.production?
+  storage :fog
+else
+  storage :file
+end
+世の中には多くのクラウドストレージサービスがありますが、今回は有名で信頼性も高いアマゾンの「Simple Storage Service (S3)25」を使います。
+セットアップの手順は次のとおりです。
+
+(1.2.1でAWSアカウントを作成していない場合) Amazon Web Servicesアカウントにサインアップする
+AWS Identity and Access Management (IAM)でユーザーを作成し、AccessキーとSecretキーをメモする
+AWS ConsoleからS3 bucketを作成し (bucketの名前はなんでも大丈夫です)、2.で作成したユーザーに対してRead権限とWrite権限を付与する
+(S3のセットアップはやや高度です。
+コラム 1.1の考え方をうまく活用してみてください。)
+
+より詳細について知りたい場合は、S3のドキュメント (英語)26 を読んだり、GoogleやStack Overflowで検索してみたりしてください。
+
+S3アカウントの作成と設定が終わったら、CarrierWaveの設定ファイルを次のリスト 13.70のように修正してください。
+
+訳注: fogでリージョンを指定する場合は :region => ENV[’S3_REGION’] といったパラメータを渡し、heroku config:set S3_REGION="リージョン名" といったコマンドを実行することで設定できます。
+なお、東京のリージョン名は "ap-northeast-1" です。
+詳細はAmazon Web Serviceのリージョンとエンドポイントを参照してください。
+
+##..............................
+リスト 13.70: CarrierWaveを通してS3を使うように修正する
+#...............................
+config/initializers/carrier_wave.rb
+ if Rails.env.production?
+  CarrierWave.configure do |config|
+    config.fog_credentials = {
+      # Amazon S3用の設定
+      :provider              => 'AWS',
+#..............................
+
+      :region                => ENV['S3_REGION'],     # 例: 'ap-northeast-1'
+      :aws_access_key_id     => ENV['S3_ACCESS_KEY'],
+      :aws_secret_access_key => ENV['S3_SECRET_KEY']
+    }
+    config.fog_directory     =  ENV['S3_BUCKET']
+  end
+end
+本番環境のメール設定 (リスト 11.41) と同様に、リスト 13.70ではHerokuの環境変数 ENV を使って、機密情報が漏洩しないようにしています。
+11.4や12.4では、SendGridのアドオンがこれらの環境変数を自動的に設定してくれましたが、今回は手動で設定する必要があります。
+heroku config:setコマンドを使って、次のようにHeroku上の環境変数を設定してください。
+
+$ heroku config:set S3_ACCESS_KEY="ココに先ほどメモしたAccessキーを入力"
+$ heroku config:set S3_SECRET_KEY="同様に、Secretキーを入力"
+$ heroku config:set S3_BUCKET="Bucketの名前を入力"
+$ heroku config:set S3_REGION="Regionの名前を入力"
+設定が無事に終わったら、これまでの変更をコミットしたりデプロイする準備が整いました。
+ただし、その前に.gitignoreファイルをリスト 13.71のように更新しおきましょう。
+これにより、画像を保存するディレクトリがGitへの保存対象から除かれるので、アプリケーションと関係の無い画像ファイルなどが無視できるようになります。
+
+##..............................
+リスト 13.71: .gitignoreファイルにアップロード用ディレクトリを追加する
+#...............................
+.
+.
+.
+# アップロードされたテスト画像を無視する
+/public/uploads
+#..............................
+
+それでは、これまでの変更をトピックブランチにコミットし、masterブランチにマージしていきましょう。
+
+$ rails test
+$ git add -A
+$ git commit -m "Add user microposts"
+$ git checkout master
+$ git merge user-microposts
+$ git push
+次に、Herokuへのデプロイ、データベースのリセット、サンプルデータの生成を順に実行していきます。
+
+$ git push heroku
+$ heroku pg:reset DATABASE
+$ heroku run rails db:migrate
+$ heroku run rails db:seed
+Herokuには既にImageMagickがインストールされているので、(設定がうまくいっていれば) 画像リサイズや本番での画像アップロードも成功します。
+次の図 13.23のようになっていれば成功です。
+
+
+#.....................
+images/figures/image_upload_production_4th_ed
+  ==> image_upload_production_4th_ed.png
+図 13.23: 本番環境での画像アップロード
+#.....................
+
+演習
+本番環境で解像度の高い画像をアップロードし、適切にリサイズされているか確認してみましょう。
+長方形の画像であっても、適切にリサイズされていますか?
+
+#-----------------------------
+[_ 13.5 ] 最後に
+#-----------------------------
+
+Micropostsリソースの追加によって、サンプルアプリケーションはほぼ完成に近づきました。
+残すところは、ユーザーをお互いにフォローするソーシャルな仕組みのみとなります。
+第14章では、そのようなユーザー同士の関係 (リレーションシップ) をモデリングする方法を学び、それがマイクロポストのフィードにどのように関連するかを学びます。
+
+もし13.4.4をスキップしていたら、ここで今までの変更のコミットとマージを済ませてください。
+
+$ rails test
+$ git add -A
+$ git commit -m "Add user microposts"
+$ git checkout master
+$ git merge user-microposts
+$ git push
+準備ができたら、本番環境へデプロイしてみましょう。
+
+$ git push heroku
+$ heroku pg:reset DATABASE
+$ heroku run rails db:migrate
+$ heroku run rails db:seed
+なお、必要なgemのインストールはこれで終わりです。
+今後、新たなgemを追加することはありません。
+参考までに、最終状態のGemfileをリスト 13.72に示します27。
+
+##..............................
+リスト 13.72: サンプルアプリケーションのGemfile (完成)
+#...............................
+source 'https://rubygems.org'
+
+gem 'rails',                   '5.1.6'
+gem 'bcrypt',                  '3.1.12'
+gem 'faker',                   '1.7.3'
+gem 'carrierwave',             '1.2.2'
+gem 'mini_magick',             '4.7.0'
+gem 'will_paginate',           '3.1.6'
+gem 'bootstrap-will_paginate', '1.0.0'
+gem 'bootstrap-sass',          '3.3.7'
+gem 'puma',                    '3.9.1'
+gem 'sass-rails',              '5.0.6'
+gem 'uglifier',                '3.2.0'
+gem 'coffee-rails',            '4.2.2'
+gem 'jquery-rails',            '4.3.1'
+gem 'turbolinks',              '5.0.1'
+gem 'jbuilder',                '2.7.0'
+
+group :development, :test do
+  gem 'sqlite3', '1.3.13'
+  gem 'byebug',  '9.0.6', platform: :mri
+end
+
+group :development do
+  gem 'web-console',           '3.5.1'
+  gem 'listen',                '3.1.5'
+  gem 'spring',                '2.0.2'
+  gem 'spring-watcher-listen', '2.0.1'
+end
+
+group :test do
+  gem 'rails-controller-testing', '1.0.2'
+  gem 'minitest',                 '5.10.3'
+  gem 'minitest-reporters',       '1.1.14'
+  gem 'guard',                    '2.14.1'
+  gem 'guard-minitest',           '2.4.6'
+end
+
+group :production do
+  gem 'pg',   '0.20.0'
+  gem 'fog',  '1.42'
+end
+
+# Windows環境ではtzinfo-dataというgemを含める必要があります
+gem 'tzinfo-data', platforms: [:mingw, :mswin, :x64_mingw, :jruby]
+#..............................
+
+
+#-----------------------------------------------------
+[__ 13.5.1 ] 本章のまとめ
+#-----------------------------------------------------
+
+Active Recordモデルの力によって、マイクロポストも (ユーザーと同じで) リソースとして扱える
+Railsは複数のキーインデックスをサポートしている
+Userは複数のMicropostsを持っていて (has_many)、Micropostは1人のUserに依存している (belongs_to) といった関係性をモデル化した
+has_manyやbelongs_toを利用することで、関連付けを通して多くのメソッドが使えるようになった
+user.microposts.build(...)というコードは、引数で与えたユーザーに関連付けされたマイクロポストを返す
+default_scopeを使うとデフォルトの順序を変更できる
+default_scopeは引数に無名関数 (->) を取る
+dependent: :destroyオプションを使うと、関連付けされたオブジェクトと自分自身を同時に削除する
+paginateメソッドやcountメソッドは、どちらも関連付けを通して実行され、効率的にデータベースに問い合わせしている
+fixtureは、関連付けを使ったオブジェクトの作成もサポートしている
+パーシャルを呼び出すときに、一緒に変数を渡すことができる
+whereメソッドを使うと、Active Recordを通して選択 (部分集合を取り出すこと) ができる
+依存しているオブジェクトを作成/削除するときは、常に関連付けを通すようにすることで、よりセキュアな操作が実現できる
+CarrierWaveを使うと画像アップロードや画像リサイズができる
+
+NOTE: 1 
+この名前はTwitterのマイクロブログという説明文から着想を得ました。
+ブログにはポストがあるので、マイクロブログがあればマイクロポストもある、といった具合です。
+ ↑
+
+NOTE: 2 
+www.postgresql.org/docs/9.1/static/datatype-character.html ↑
+
+NOTE: 3 
+外部キー参照は、データベースレベルでの制約です。
+これによって、Micropostsテーブルのuser_idは、Usersテーブルのidカラムを参照するようになります。
+本チュートリアルでこの詳細が重要になることはありません。
+また、この外部キーによる制約は、すべてのデータベースで使えるわけではありません (例えばHerokuのPostgreSQLではサポートされていますが、開発用のSQLiteではサポートされていません)。
+外部キーの詳細は14.1.2で学びます。
+ ↑
+
+NOTE: 4 
+ユーザー一覧を実装するときも (10.5)、似たような問題にぶつかりました。
+ ↑
+
+NOTE: 5 
+SQLは大文字小文字を区別しませんが、慣習的にSQLのキーワード ( DESCなど) は大文字で書くことになっています。
+ ↑
+
+NOTE: 6 
+Faker::Lorem.sentenceは、lorem ipsumと呼ばれるダミーのテキストを返します。
+ちなみに第6章でも触れましたが、lorem ipsumには面白い裏話があります。
+ ↑
+
+NOTE: 7 
+Faker gemのlorem ipsumサンプルテキストはランダムに生成される仕様になっているため、サンプルマイクロポストの内容はこの図と違っているはずです。
+ ↑
+
+NOTE: 8 
+便宜上、リスト 13.26はこの章で必要なCSSをすべて含んでいます。
+ ↑
+
+NOTE: 9 
+もしfull_titleヘルパーを使って他のテストもリファクタリングしたくなったら (例えばリスト 3.30など)、test_helper.rbからApplicationヘルパーを読み込んでください。
+ ↑
+
+NOTE: 10 
+JavaやC++といった言語の挙動とは異なり、RubyのPrivateメソッドは継承クラスからも呼び出すことができる点に注意してください。
+この違いを指摘をしてくれたVishal Antonyに感謝します。
+ ↑
+
+NOTE: 11 
+whereメソッドや他の関連するメソッドの詳細については、RailsガイドのActive Record クエリインターフェイスを読んでください。
+ ↑
+
+NOTE: 12 
+これは、HTTPの仕様として定義されているHTTP_REFERERと対応しています。
+ちなみに「referer」は誤字ではありません。
+HTTPの仕様では、確かにこの間違ったスペルを使っているのです。
+一方、Railsは「referrer」という正しいスペルで使っています。
+ ↑
+
+NOTE: 13 
+私もRailsがどうやってこのURLを取得しているのか、パッと思い出すことはできませんでした。
+そこで、Googleで「rails request previous url」と検索し、Stack Overflowのスレッドを見つけ、この答えに至りました。
+ ↑
+
+NOTE: 14 
+画像の引用元: https://www.flickr.com/photos/grungepunk/14026922186, 2014-09-19. Copyright © 2014 by Jussie D. Brito. ( Creative Commons Attribution-ShareAlike 2.0 Generic ライセンス) ↑
+
+NOTE: 15 
+これまでと同様に、Gemfileで指定した各gemのバージョンはgemfiles-4th-ed.railstutorial.orgと一致している必要があります。
+もしうまく次に進めない場合はチェックしてみてください。
+ ↑
+
+NOTE: 16 
+最初はimageという属性名を使っていたのですが、この名前だと一般的すぎて、逆に混乱を招いてしまいました。
+ ↑
+
+NOTE: 17 
+8.1.2で少し触れましたが、form_tagを使ってファイルをアップロードさせたい場合はhtml: { multipart: true }オプションを渡す必要があります。
+一方、form_forを使う場合、必要となるマルチパートに渡すオプションは、Railsが自動的に追加してくれます。
+この点について指摘してくれたAlan Cruzに感謝します。
+ ↑
+
+NOTE: 18 
+クラウドIDEで開発してれば大丈夫ですが、Windows上で開発している場合は、次のように:binaryパラメーターを追加してください。
+fixture_file_upload(file, type, :binary). ↑
+
+NOTE: 19 
+この手のトピックを学ぶには「Googleで「javascript maximum file size」といった関連するキーワードで検索し、Stack Overflowが見つかるまで (検索ワードを調整しながら) 繰り返す」、これが一番です。
+ ↑
+
+NOTE: 20 
+jQueryに熟達した開発者であれば、JavaScriptだけでサイズをチェックするかもしれません。
+しかし、本書はJavaScriptチュートリアルではないので、リスト 13.66のようなコードで十分と考えました。
+ ↑
+
+NOTE: 21 
+他の解決策としてCSSで表示サイズを調整する方法もありますが、これだとファイルサイズが変わりません。
+結果として、ファイルサイズの大きな画像によって、読み込み時間が長くなるといった問題が発生します。
+例えば "小さい" 画像を表示するだけなのに、やたらに読み込み時間が長いウェブサイトに訪れたことはありませんか。
+これがその原因です。
+ ↑
+
+NOTE: 22 
+もしクラウドIDEやLinuxライクなシステム以外で開発しているのであれば、Googleで「imagemagick <あなたのプラットフォーム名>」と検索してください。
+macOSの場合は、Homebrewを導入後、brew install imagemagickと実行してインストールしてください。
+ ↑
+
+NOTE: 23 
+特に、Herokuのファイルストレージは一時的なので、デプロイする度にアップロードした画像が削除される仕様になっています。
+ ↑
+
+NOTE: 24 
+この節の内容は必須ではありませんので、スキップしても問題ありません。
+ ↑
+
+NOTE: 25 
+S3は課金サービスですが、Railsチュートリアルのサンプルアプリケーションをセットアップしたりテストするだけであれば、毎月1円ほどしか課金されません。
+ ↑
+
+NOTE: 26 
+aws.amazon.com/documentation/s3/ ↑
+
+NOTE: 27 
+これまでと同様に、Gemfileで指定した各gemのバージョンはgemfiles-4th-ed.railstutorial.orgと一致している必要があります。
+もしうまく次に進めない場合はチェックしてみてください。
+ ↑

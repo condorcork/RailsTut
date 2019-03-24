@@ -1,0 +1,2238 @@
+第14章
+ユーザーをフォローする
+この章では、サンプルアプリケーションのコアとなる部分を完成させます。
+具体的には、他のユーザーをフォロー (およびフォロー解除) できるソーシャルな仕組みの追加と、フォローしているユーザーの投稿をステータスフィードに表示する機能を追加します。
+まずは、ユーザー間の関係性をどうモデリングするかについて学びます (14.1)。
+その後、 モデリング結果に対応するWebインターフェースを実装していきます (14.2)。
+このとき、Webインターフェースの例としてAjaxについても紹介します。
+最後に、ステータスフィードの完成版を実装します (14.3)。
+
+この最終章では、本書の中で最も難易度の高い手法をいくつか使っています。
+その中には、ステータスフィード作成のためにRuby/SQLを「だます」テクニックも含まれます。
+この章の例全体にわたって、これまでよりも複雑なデータモデルを使います。
+ここで学んだデータモデルは、今後自分用のWebアプリケーションを開発するときに必ず役に立ちます。
+また、本書を卒業して実際の開発に携わるときのために、14.4で役立つリソース集 (読み物ガイド) についても紹介します。
+
+この章で扱っている手法は本書全体の中で最も難易度が高いので、理解を助けるため、コードを書く前にはいったん立ち止まってインターフェースを探検することにします。
+これまでの章と同様、最初にモックアップを示します1。
+ページ操作の全体的なフローは次のようになります。
+あるユーザー (John Calvin) は自分のプロフィールページを最初に表示し (図 14.1)、フォローするユーザーを選択するためにUsersページ (図 14.2) に移動します。
+Calvinは2番目のユーザーThomas Hobbes (図 14.3) を表示し、[Follow] ボタンを押してフォローします。
+これにより、[Follow] ボタンが [Unfollow] に変わり、Hobbes の [followers] カウントが1人増えます (図 14.4)。
+CalvinがHomeページに戻ると、[following] カウントが1人増え、Hobbesのマイクロポストがステータスフィードに表示されるようになっていることがわかります (図 14.5)。
+この節では、以後このフローの実現に専念します。
+
+
+#.....................
+images/figures/page_flow_profile_mockup_3rd_edition
+  ==> page_flow_profile_mockup_3rd_edition.png
+図 14.1: 現在のプロフィールページ
+#.....................
+
+
+#.....................
+images/figures/page_flow_user_index_mockup_bootstrap
+  ==> page_flow_user_index_mockup_bootstrap.png
+図 14.2: フォローする相手を見つける
+#.....................
+
+
+#.....................
+images/figures/page_flow_other_profile_follow_button_mockup_3rd_edition
+  ==> page_flow_other_profile_follow_button_mockup_3rd_edition.png
+図 14.3: ユーザーのプロフィール画面に [Follow] ボタンが表示されている
+#.....................
+
+
+#.....................
+images/figures/page_flow_other_profile_unfollow_button_mockup_3rd_edition
+  ==> page_flow_other_profile_unfollow_button_mockup_3rd_edition.png
+図 14.4: プロフィールに [Unfollow] ボタンが表示され、フォロワーのカウントが1つ増えた
+#.....................
+
+
+#.....................
+images/figures/page_flow_home_page_feed_mockup_3rd_edition
+  ==> page_flow_home_page_feed_mockup_3rd_edition.png
+図 14.5: Homeページにステータスフィードが表示され、フォローのカウントが1増えた
+#.....................
+
+
+#-----------------------------
+[_ 14.1 ] Relationshipモデル
+#-----------------------------
+
+ユーザーをフォローする機能を実装する第一歩は、データモデルを構成することです。
+ただし、これは見た目ほど単純ではありません。
+素朴に考えれば、has_many (1対多) の関連付けを用いて「1人のユーザーが複数のユーザーをhas_manyとしてフォローし、1人のユーザーに複数のフォロワーがいることをhas_manyで表す」といった方法でも実装できそうです。
+しかし後ほど説明しますが、この方法ではたちまち壁に突き当たってしまいます。
+これを解決するためのhas_many throughについてもこの後で説明します。
+
+Gitユーザーはこれまで同様新しいトピックブランチを作成してください。
+
+$ git checkout -b following-users
+
+#-----------------------------------------------------
+[__ 14.1.1 ] データモデルの問題 (および解決策)
+#-----------------------------------------------------
+
+ユーザーをフォローするデータモデル構成のための第一歩として、典型的な場合を検討してみましょう。
+あるユーザーが、別のユーザーをフォローしているところを考えてみましょう。
+具体例を挙げると、CalvinはHobbesをフォローしています。
+これを逆から見れば、HobbesはCalvinからフォローされています。
+CalvinはHobbesから見ればフォロワー (follower) であり、CalvinがHobbesをフォローした (followed) ことになります。
+Railsにおけるデフォルトの複数形の慣習に従えば、あるユーザーをフォローしているすべてのユーザーの集合はfollowersとなり、user.followersはそれらのユーザーの配列を表すことになります。
+しかし残念なことに、この名前付けは逆向きではうまくいきません (Railsというより英語の都合ですが)。
+あるユーザーがフォローしているすべてのユーザーの集合は、このままではfollowedsとなってしまい、英語の文法からも外れるうえに非常に見苦しいものになってしまいます。
+そこで、Twitterの慣習にならい、本チュートリアルではfollowingという呼称を採用します (例: “50 following, 75 followers”)。
+したがって、あるユーザーがフォローしているすべてのユーザーの集合はcalvin.followingとなります。
+
+これにより、図 14.6のようにfollowingテーブルと has_many関連付けを使って、フォローしているユーザーのモデリングができます。
+user.followingはユーザーの集合でなければならないため、followingテーブルのそれぞれの行は、followed_idで識別可能なユーザーでなければなりません (これはfollower_idの関連付けについても同様です)2。
+さらに、それぞれの行はユーザーなので、これらのユーザーに名前やパスワードなどの属性も追加する必要があるでしょう。
+
+
+#.....................
+images/figures/naive_user_has_many_following
+  ==> naive_user_has_many_following.png
+図 14.6: フォローしているユーザーの素朴な実装例
+#.....................
+
+図 14.6のデータモデルの問題点は、非常に無駄が多いことです。
+各行には、フォローしているユーザーのidのみならず、名前やメールアドレスまであります。
+これらはいずれもusersテーブルに既にあるものばかりです。
+さらによくないことに、followersの方をモデリングするときにも、同じぐらい無駄の多いfollowersテーブルを別に作成しなければならなくなってしまいます。
+結論としては、このデータモデルはメンテナンスの観点から見て悪夢です。
+ユーザー名を変更するたびに、usersテーブルのそのレコードだけでなく、followingテーブルとfollowersテーブルの両方について、そのユーザーを含むすべての行を更新しなければならなくなります。
+
+この問題の根本は、必要な抽象化を行なっていないことです。
+正しいモデルを見つけ出す方法の1つは、Webアプリケーションにおけるfollowingの動作をどのように実装するかをじっくり考えることです。
+7.1.2において、RESTアーキテクチャは、作成されたり削除されたりするリソースに関連していたことを思い出してください。
+ここから、2つの疑問が生じます。
+ 1. あるユーザーが別のユーザーをフォローするとき、何が作成されるのでしょうか。
+ 2. あるユーザーが別のユーザーをフォロー解除するとき、何が削除されるのでしょうか。
+この点を踏まえて考えると、この場合アプリケーションによって作成または削除されるのは、つまるところ2人のユーザーの「関係 (リレーションシップ)」であることがわかります。
+つまり、1人のユーザーは1対多の関係を持つことができ、さらにユーザーはリレーションシップを経由して多くのfollowing (またはfollowers) と関係を持つことができるということです。
+
+このデータモデルには他にも解決しなくてはいけない問題があります。
+Facebookのような友好関係 (Friendships) では本質的に左右対称のデータモデルが成り立ちますが、Twitterのようなフォロー関係では左右非対称の性質があります。
+すなわち、CalvinはHobbesをフォローしていても、HobbesはCalvinをフォローしていないといった関係性が成り立つのです。
+このような左右非対称な関係性を見分けるために、それぞれを能動的関係 (Active Relationship)と受動的関係 (Passive Relationship)と呼ぶことにします。
+例えば先ほどの事例のような、CalvinがHobbesをフォローしているが、HobbesはCalvinをフォローしていない場合では、CalvinはHobbesに対して「能動的関係」を持っていることになります。
+逆に、HobbesはCalvinに対して「受動的関係」を持っていることになります3。
+
+まずは、フォローしているユーザーを生成するために、能動的関係に焦点を当てていきます (受動的関係については14.1.5で考えていきます)。
+先ほどの図 14.6は実装のヒントになりました。
+フォローしているユーザーはfollowed_idがあれば識別することができるので、先ほどのfollowingテーブルをactive_relationshipsテーブルと見立ててみましょう。
+ただしユーザー情報は無駄なので、ユーザーid以外の情報は削除します。
+そして、followed_idを通して、usersテーブルのフォローされているユーザーを見つけるようにします。
+このデータモデルを模式図にすると、図 14.7のようになります。
+
+
+#.....................
+images/figures/user_has_many_following_3rd_edition
+  ==> user_has_many_following_3rd_edition.png
+図 14.7: 能動的関係をとおしてフォローしているユーザーを取得する模式図
+#.....................
+
+能動的関係も受動的関係も、最終的にはデータベースの同じテーブルを使うことになります。
+したがって、テーブル名にはこの「関係」を表す「relationships」を使いましょう。
+モデル名はRailsの慣習にならって、Relationshipとします。
+作成したRelationshipデータモデルを図 14.8に示します。
+1つのrelationshipsテーブルを使って2つのモデル (能動的関係と受動的関係) をシミュレートする方法については、14.1.4で説明します。
+
+
+#.....................
+images/figures/relationship_model
+  ==> relationship_model.png
+図 14.8: Relationshipデータモデル
+#.....................
+
+このデータモデルを実装するために、まずは次のように図 14.8に対応したマイグレーションを生成します。
+
+$ rails generate model Relationship follower_id:integer followed_id:integer
+このリレーションシップは今後follower_idとfollowed_idで頻繁に検索することになるので、リスト 14.1に示したように、それぞれのカラムにインデックスを追加します。
+
+##..............................
+リスト 14.1: relationshipsテーブルにインデックスを追加する
+#...............................
+db/migrate/[timestamp]_create_relationships.rb
+ class CreateRelationships < ActiveRecord::Migration[5.0]
+  def change
+    create_table :relationships do |t|
+      t.integer :follower_id
+      t.integer :followed_id
+
+      t.timestamps
+    end
+    add_index :relationships, :follower_id
+    add_index :relationships, :followed_id
+    add_index :relationships, [:follower_id, :followed_id], unique: true
+  end
+end
+#..............................
+
+リスト 14.1では複合キーインデックスという行もあることに注目してください。
+これは、follower_idとfollowed_idの組み合わせが必ずユニークであることを保証する仕組みです。
+これにより、あるユーザーが同じユーザーを2回以上フォローすることを防ぎます (リスト 6.29でメールアドレスの一意性を保証したり、リスト 13.3で使った複合キーインデックスと比較してみてください)。
+もちろん、このような重複 (2回以上フォローすること) が起きないよう、インターフェイス側の実装でも注意を払います(14.1.4)。
+しかし、ユーザーが何らかの方法で (例えばcurlなどのコマンドラインツールを使って) Relationshipのデータを操作するようなことも起こり得ます。
+そのような場合でも、一意なインデックスを追加していれば、エラーを発生させて重複を防ぐことができます。
+
+relationshipsテーブルを作成するために、いつものようにデータベースのマイグレーションを行います。
+
+$ rails db:migrate
+演習
+図 14.7のid=1のユーザーに対してuser.following.map(&:id)を実行すると、結果はどのようになるでしょうか? 想像してみてください。
+ヒント: 4.3.2で紹介したmap(&:method_name)のパターンを思い出してください。
+例えばuser.following.map(&:id)の場合、idの配列を返します。
+図 14.7を参考にして、id=2のユーザーに対してuser.followingを実行すると、結果はどのようになるでしょうか? また、同じユーザーに対してuser.following.map(&:id)を実行すると、結果はどのようになるでしょうか? 想像してみてください。
+
+#-----------------------------------------------------
+[__ 14.1.2 ] User/Relationshipの関連付け
+#-----------------------------------------------------
+
+フォローしているユーザーとフォロワーを実装する前に、UserとRelationshipの関連付けを行います。
+1人のユーザーにはhas_many (1対多) のリレーションシップがあり、このリレーションシップは2人のユーザーの間の関係なので、フォローしているユーザーとフォロワーの両方に属します (belongs_to)。
+
+13.1.3のマイクロポストのときと同様、次のようなユーザー関連付けのコードを使って新しいリレーションシップを作成します。
+
+user.active_relationships.build(followed_id: ...)
+この時点で、アプリケーションコードは13.1.3のようになるのではないかと予測した方もいるかもしれません。
+実際似ているのですが、2つの大きな違いがあります。
+
+まずは1つ目の違いについてです。
+以前、ユーザーとマイクロポストの関連付けをしたときは、次のように書きました。
+
+class User < ApplicationRecord
+  has_many :microposts
+  .
+  .
+  .
+end
+引数の:micropostsシンボルから、Railsはこれに対応するMicropostモデルを探し出し、見つけることができました4。
+しかし今回のケースで同じように書くと、
+
+has_many :active_relationships
+となってしまい、(ActiveRelationshipモデルを探してしまい) Relationshipモデルを見つけることができません。
+このため、今回のケースでは、Railsに探して欲しいモデルのクラス名を明示的に伝える必要があります。
+
+2つ目の違いは、先ほどの逆のケースについてです。
+以前はMicropostモデルで、
+
+class Micropost < ApplicationRecord
+  belongs_to :user
+  .
+  .
+  .
+end
+このように書きました。
+micropostsテーブルにはuser_id属性があるので、これを辿って対応する所有者 (ユーザー) を特定することができました (13.1.1)。
+データベースの2つのテーブルを繋ぐとき、このようなidは外部キー (foreign key)と呼びます。
+すなわち、Userモデルに繋げる外部キーが、Micropostモデルのuser_id属性ということです。
+この外部キーの名前を使って、Railsは関連付けの推測をしています。
+具体的には、Railsはデフォルトでは外部キーの名前を<class>_idといったパターンとして理解し、 <class>に当たる部分からクラス名 (正確には小文字に変換されたクラス名) を推測します5。
+ただし、先ほどはユーザーを例として扱いましたが、今回のケースではフォローしているユーザーをfollower_idという外部キーを使って特定しなくてはなりません。
+また、followerというクラス名は存在しないので、ここでもRailsに正しいクラス名を伝える必要が発生します。
+
+先ほどの説明をコードにまとめると、UserとRelationshipの関連付けはリスト 14.2とリスト 14.3のようになります。
+
+##..............................
+リスト 14.2: 能動的関係に対して1対多 (has_many) の関連付けを実装する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  has_many :microposts, dependent: :destroy
+  has_many :active_relationships, class_name:  "Relationship",
+                                  foreign_key: "follower_id",
+                                  dependent:   :destroy
+  .
+  .
+  .
+end
+#..............................
+
+(ユーザーを削除したら、ユーザーのリレーションシップも同時に削除される必要があります。
+そのため、関連付けにdependent: :destroyも追加しています。)
+
+##..............................
+リスト 14.3: リレーションシップ/フォロワーに対してbelongs_toの関連付けを追加する
+#...............................
+app/models/relationship.rb
+ class Relationship < ApplicationRecord
+  belongs_to :follower, class_name: "User"
+  belongs_to :followed, class_name: "User"
+end
+#..............................
+
+なお、followerの関連付けについては、14.1.4に入るまでは使いません。
+しかしfollowerとfollowedを対称的に実装しておくことで、構造に対する理解は容易になるはずです。
+
+リスト 14.2とリスト 14.3で定義した関連付けにより、表 13.1で以前紹介したような多くのメソッドが使えるようになりました。
+今回使えるようになったメソッドを表 14.1に示します。
+
+メソッド	用途
+active_relationship.follower	フォロワーを返します
+active_relationship.followed	フォローしているユーザーを返します
+user.active_relationships.create(followed_id: other_user.id)	userと紐付けて能動的関係を作成/登録する
+user.active_relationships.create!(followed_id: other_user.id)	userを紐付けて能動的関係を作成/登録する (失敗時にエラーを出力)
+user.active_relationships.build(followed_id: other_user.id)	userと紐付けた新しいRelationshipオブジェクトを返す
+表 14.1: ユーザーと能動的関係の関連付けによって使えるようになったメソッドのまとめ
+演習
+コンソールを開き、表 14.1のcreateメソッドを使ってActiveRelationshipを作ってみましょう。
+データベース上に２人以上のユーザーを用意し、最初のユーザーが２人目のユーザーをフォローしている状態を作ってみてください。
+先ほどの演習を終えたら、active_relationship.followedの値とactive_relationship.followerの値を確認し、それぞれの値が正しいことを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 14.1.3 ] Relationshipのバリデーション
+#-----------------------------------------------------
+
+先に進む前に、Relationshipモデルの検証を追加して完全なものにしておきましょう。
+テストコード (リスト 14.4) とアプリケーションコード (リスト 14.5) は素直な作りです。
+ただし、User用のfixtureファイル (リスト 6.30) と同じように、生成されたRelationship用のfixtureでは、マイグレーション (リスト 14.1) で制約させた一意性を満たすことができません。
+ということで、ユーザーのときと同じで (リスト 6.31でfixtureの内容を削除したように)、今の時点では生成されたRelationship用のfixtureファイルも空にしておきましょう (リスト 14.6)。
+
+##..............................
+リスト 14.4: Relationshipモデルのバリデーションをテストする
+#...............................
+test/models/relationship_test.rb
+ require 'test_helper'
+
+class RelationshipTest < ActiveSupport::TestCase
+
+  def setup
+    @relationship = Relationship.new(follower_id: users(:michael).id,
+                                     followed_id: users(:archer).id)
+  end
+
+  test "should be valid" do
+    assert @relationship.valid?
+  end
+
+  test "should require a follower_id" do
+    @relationship.follower_id = nil
+    assert_not @relationship.valid?
+  end
+
+  test "should require a followed_id" do
+    @relationship.followed_id = nil
+    assert_not @relationship.valid?
+  end
+end
+#..............................
+
+##..............................
+リスト 14.5: Relationshipモデルに対してバリデーションを追加する
+#...............................
+app/models/relationship.rb
+ class Relationship < ApplicationRecord
+  belongs_to :follower, class_name: "User"
+  belongs_to :followed, class_name: "User"
+  validates :follower_id, presence: true
+  validates :followed_id, presence: true
+end
+#..............................
+
+##..............................
+リスト 14.6: Relationship用のfixtureを空にする green
+#...............................
+test/fixtures/relationships.yml
+ # 空にする
+#..............................
+
+この時点では、テストは greenになるはずです。
+
+##..............................
+リスト 14.7: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 14.5のバリデーションをコメントアウトしても、テストが成功したままになっていることを確認してみましょう。
+(以前のRailsのバージョンでは、このバリデーションが必須でしたが、Rails 5から必須ではなくなりました。
+今回はフォロー機能の実装を優先しますが、この手のバリデーションが省略されている可能性があることを頭の片隅で覚えておくと良いでしょう。)
+
+#-----------------------------------------------------
+[__ 14.1.4 ] フォローしているユーザー
+#-----------------------------------------------------
+
+いよいよRelationshipの関連付けの核心、followingとfollowersに取りかかります。
+今回はhas_many throughを使います。
+図 14.7のように、1人のユーザーにはいくつもの「フォローする」「フォローされる」といった関係性があります (こういった関係性を「多対多」と呼びます)。
+デフォルトのhas_many throughという関連付けでは、Railsはモデル名 (単数形) に対応する外部キーを探します。
+つまり、次のコードでは、
+
+has_many :followeds, through: :active_relationships
+Railsは「followeds」というシンボル名を見て、これを「followed」という単数形に変え、 relationshipsテーブルのfollowed_idを使って対象のユーザーを取得してきます。
+しかし、14.1.1で指摘したように、user.followedsという名前は英語として不適切です。
+代わりに、user.followingという名前を使いましょう。
+そのためには、Railsのデフォルトを上書きする必要があります。
+ここでは:sourceパラメーター (リスト 14.8) を使って、「following配列の元はfollowed idの集合である」ということを明示的にRailsに伝えます。
+
+##..............................
+リスト 14.8: Userモデルにfollowingの関連付けを追加する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  has_many :microposts, dependent: :destroy
+  has_many :active_relationships, class_name:  "Relationship",
+                                  foreign_key: "follower_id",
+                                  dependent:   :destroy
+  has_many :following, through: :active_relationships, source: :followed
+  .
+  .
+  .
+end
+#..............................
+
+リスト 14.8で定義した関連付けにより、フォローしているユーザーを配列の様に扱えるようになりました。
+例えば、include?メソッド (4.3.1) を使ってフォローしているユーザーの集合を調べてみたり、関連付けを通してオブジェクトを探しだせるようになります。
+
+user.following.include?(other_user)
+user.following.find(other_user)
+followingで取得したオブジェクトは、配列のように要素を追加したり削除したりすることができます。
+
+user.following << other_user
+user.following.delete(other_user)
+(4.3.1を思い出してください。
+<<演算子 (Shovel Operator) で配列の最後に追記することができます。)
+
+followingメソッドで配列のように扱えるだけでも便利ですが、Railsは単純な配列ではなく、もっと賢くこの集合を扱っています。
+例えば次のようなコードでは、
+
+following.include?(other_user)
+フォローしている全てのユーザーをデータベースから取得し、その集合に対してinclude?メソッドを実行しているように見えますが、しかし実際にはデータベースの中で直接比較をするように配慮しています。
+なお、13.2.1でも説明したように、次のようなコードでは、
+
+user.microposts.count
+データベースの中で合計を計算したほうが高速になる点に注意してください。
+
+次に、followingで取得した集合をより簡単に取り扱うために、followやunfollowといった便利メソッドを追加しましょう。
+これらのメソッドは、例えばuser.follow(other_user)といった具合に使います。
+さらに、これに関連するfollowing?論理値メソッドも追加し、あるユーザーが誰かをフォローしているかどうかを確認できるようにします6。
+
+今回は、こういったメソッドはテストから先に書いていきます。
+というのも、Webインターフェイスなどで便利メソッドを使うのはまだ先なので、すぐに使える場面がなく、実装した手応えを得にくいからです。
+一方で、Userモデルに対するテストを書くのは簡単かつ今すぐできます。
+そのテストの中で、これらのメソッドを使っていきます。
+具体的には、following?メソッドであるユーザーをまだフォローしていないことを確認、followメソッドを使ってそのユーザーをフォロー、 following?メソッドを使ってフォロー中になったことを確認、 最後にunfollowメソッドでフォロー解除できたことを確認、といった具合でテストをしてきます。
+作成したコードをリスト 14.9に示します。
+
+##..............................
+リスト 14.9: “following” 関連のメソッドをテストする red
+#...............................
+test/models/user_test.rb
+ require 'test_helper'
+
+class UserTest < ActiveSupport::TestCase
+  .
+  .
+  .
+  test "should follow and unfollow a user" do
+    michael = users(:michael)
+    archer  = users(:archer)
+    assert_not michael.following?(archer)
+    michael.follow(archer)
+    assert michael.following?(archer)
+    michael.unfollow(archer)
+    assert_not michael.following?(archer)
+  end
+end
+#..............................
+
+表 14.1のメソッドを参考にしながら、followingによる関連付けを使ってfollow、unfollow、following?メソッドを実装していきましょう (リスト 14.10)。
+このとき、可能な限りself (user自身を表すオブジェクト) を省略している点に注目してください。
+
+##..............................
+リスト 14.10: "following" 関連のメソッド green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  def feed
+    .
+    .
+    .
+  end
+
+  # ユーザーをフォローする
+  def follow(other_user)
+    following << other_user
+  end
+
+  # ユーザーをフォロー解除する
+  def unfollow(other_user)
+    active_relationships.find_by(followed_id: other_user.id).destroy
+  end
+
+  # 現在のユーザーがフォローしてたらtrueを返す
+  def following?(other_user)
+    following.include?(other_user)
+  end
+
+  private
+  .
+  .
+  .
+end
+#..............................
+
+リスト 14.10のコードを追加することで、テストスイートは greenになるはずです。
+
+##..............................
+リスト 14.11: green
+#...............................
+$ rails test
+#..............................
+
+演習
+コンソールを開き、リスト 14.9のコードを順々に実行してみましょう。
+先ほどの演習の各コマンド実行時の結果を見返してみて、実際にはどんなSQLが出力されたのか確認してみましょう。
+
+#-----------------------------------------------------
+[__ 14.1.5 ] フォロワー
+#-----------------------------------------------------
+
+リレーションシップというパズルの最後の一片は、user.followersメソッドを追加することです。
+これは上のuser.followingメソッドと対になります。
+図 14.7を見ていて気付いた方もいると思いますが、フォロワーの配列を展開するために必要な情報は、relationshipsテーブルに既にあります。
+つまり、リスト 14.2で作成したactive_relationshipsのテーブルを再利用することができそうです。
+実際、follower_idとfollowed_idを入れ替えるだけで、フォロワーについてもフォローする場合と全く同じ方法が活用できます。
+したがって、データモデルは図 14.9のようになります。
+
+
+#.....................
+images/figures/user_has_many_followers_3rd_edition
+  ==> user_has_many_followers_3rd_edition.png
+図 14.9: Relationshipモデルのカラムを入れ替えて作った、フォロワーのモデル
+#.....................
+
+図 14.9を参考にしたデータモデルの実装をリスト 14.12に示しますが、この実装はリスト 14.8とまさに類似しています。
+
+##..............................
+リスト 14.12: 受動的関係を使ってuser.followersを実装する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  has_many :microposts, dependent: :destroy
+  has_many :active_relationships,  class_name:  "Relationship",
+                                   foreign_key: "follower_id",
+                                   dependent:   :destroy
+  has_many :passive_relationships, class_name:  "Relationship",
+                                   foreign_key: "followed_id",
+                                   dependent:   :destroy
+  has_many :following, through: :active_relationships,  source: :followed
+  has_many :followers, through: :passive_relationships, source: :follower
+  .
+  .
+  .
+end
+#..............................
+
+一点、リスト 14.12で注意すべき箇所は、次のように参照先 (followers) を指定するための:sourceキーを省略してもよかったという点です。
+
+has_many :followers, through: :passive_relationships
+これは:followers属性の場合、Railsが「followers」を単数形にして自動的に外部キーfollower_idを探してくれるからです。
+リスト 14.12と違って必要のない:sourceキーをそのまま残しているのは、has_many :followingとの類似性を強調させるためです。
+
+次に、followers.include?メソッドを使って先ほどのデータモデルをテストしていきます。
+テストコードはリスト 14.13のとおりです。
+ちなみにリスト 14.13では、following?と対照的なfollowed_by?メソッドを定義してもよかったのですが、サンプルアプリケーションで実際に使う場面がなかったのでこのメソッドは省略しました。
+
+##..............................
+リスト 14.13: followersに対するテスト green
+#...............................
+test/models/user_test.rb
+ require 'test_helper'
+
+class UserTest < ActiveSupport::TestCase
+  .
+  .
+  .
+  test "should follow and unfollow a user" do
+    michael  = users(:michael)
+    archer   = users(:archer)
+    assert_not michael.following?(archer)
+    michael.follow(archer)
+    assert michael.following?(archer)
+    assert archer.followers.include?(michael)
+    michael.unfollow(archer)
+    assert_not michael.following?(archer)
+  end
+end
+#..............................
+
+リスト 14.13ではリスト 14.9に1行だけ追加していますが、実際には多くの処理が正しく動いていなければパスしません。
+つまり、リスト 14.12の実装に対するテストは、実装の影響を受けやすいテストだといえます。
+
+この時点で、全てのテストが greenになるはずです。
+
+$ rails test
+演習
+コンソールを開き、何人かのユーザーが最初のユーザーをフォローしている状況を作ってみてください。
+最初のユーザーをuserとすると、user.followers.map(&:id)の値はどのようになっているでしょうか?
+上の演習が終わったら、user.followers.countの実行結果が、先ほどフォローさせたユーザー数と一致していることを確認してみましょう。
+user.followers.countを実行した結果、出力されるSQL文はどのような内容になっているでしょうか? また、user.followers.to_a.countの実行結果と違っている箇所はありますか? ヒント: もしuserに100万人のフォロワーがいた場合、どのような違いがあるでしょうか? 考えてみてください。
+
+#-----------------------------
+[_ 14.2 ] [Follow] のWebインターフェイス
+#-----------------------------
+
+14.1では、やや複雑なデータモデリングの技術を説明しました。
+理解するのに時間がかかってしまっても大丈夫なので、安心してください。
+また、これまでに使われた様々な関連付けを理解するのに一番良い方法は、実際にWebインターフェイスで使ってみることでしょう。
+
+この章の最初に、フォローしているユーザーのページ表示の流れについて説明しました。
+この節では、モックアップで示したようにフォロー/フォロー解除の基本的なインターフェイスを実装します。
+また、フォローしているユーザーと、フォロワーにそれぞれ表示用のページを作成します。
+14.3では、ユーザーのステータスフィードを追加して、サンプルアプリケーションを完成させます。
+
+
+#-----------------------------------------------------
+[__ 14.2.1 ] フォローのサンプルデータ
+#-----------------------------------------------------
+
+1つ前の章のときと同じように、サンプルデータを自動作成するrails db:seedを使って、データベースにサンプルデータを登録できるとやはり便利です。
+先にサンプルデータを自動作成できるようにしておけば、Webページの見た目のデザインから先にとりかかることができ、バックエンド機能の実装を後に回すことができます。
+
+リスト 14.14は、リレーションシップのサンプルデータを生成するためのコードです。
+ここでは、最初のユーザーにユーザー3からユーザー51までをフォローさせ、それから逆にユーザー4からユーザー41に最初のユーザーをフォローさせます。
+ソースを見るとわかるように、このような設定を自由に行うことができます。
+こうしてリレーションシップを作成しておけば、アプリケーションのインターフェイスを開発するには十分です。
+
+##..............................
+リスト 14.14: サンプルデータにfollowing/followerの関係性を追加する
+#...............................
+db/seeds.rb
+ # ユーザー
+User.create!(name:  "Example User",
+             email: "example@railstutorial.org",
+             password:              "foobar",
+             password_confirmation: "foobar",
+             admin:     true,
+             activated: true,
+             activated_at: Time.zone.now)
+
+99.times do |n|
+  name  = Faker::Name.name
+  email = "example-#{n+1}@railstutorial.org"
+  password = "password"
+  User.create!(name:  name,
+               email: email,
+               password:              password,
+               password_confirmation: password,
+               activated: true,
+               activated_at: Time.zone.now)
+end
+
+# マイクロポスト
+users = User.order(:created_at).take(6)
+50.times do
+  content = Faker::Lorem.sentence(5)
+  users.each { |user| user.microposts.create!(content: content) }
+end
+
+# リレーションシップ
+users = User.all
+user  = users.first
+following = users[2..50]
+followers = users[3..40]
+following.each { |followed| user.follow(followed) }
+followers.each { |follower| follower.follow(user) }
+#..............................
+
+リスト 14.14を実行してデータベース上のサンプルデータを作り直すために、いつものコマンドを実行しましょう。
+
+$ rails db:migrate:reset
+$ rails db:seed
+演習
+コンソールを開き、User.first.followers.countの結果がリスト 14.14で期待している結果と合致していることを確認してみましょう。
+先ほどの演習と同様に、User.first.following.countの結果も合致していることを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 14.2.2 ] 統計と [Follow] フォーム
+#-----------------------------------------------------
+
+これでサンプルユーザーに、フォローしているユーザーとフォロワーができました。
+プロフィールページとHomeページを更新して、これを反映しましょう。
+最初に、プロフィールページとHomeページに、フォローしているユーザーとフォロワーの統計情報を表示するためのパーシャルを作成します。
+次に、フォロー用とフォロー解除用のフォームを作成します。
+それから、フォローしているユーザーの一覧 ("following") とフォロワーの一覧 ("followers") を表示する専用のページを作成します。
+
+14.1.1で指摘したように、Twitterの慣習に従ってフォロー数の単位には「following」を使い、例えば「50 following」といった具合に表示します。
+この単位は図 14.1のモックアップの一部でも既に使われていました。
+該当箇所を拡大して図 14.10に再掲します。
+
+stats_partial_mockup
+図 14.10: 統計情報パーシャルのモックアップ
+#.....................
+
+図 14.10の統計情報には、現在のユーザーがフォローしている人数と、現在のフォロワーの人数が表示されています。
+それぞれの表示はリンクになっており、専用の表示ページに移動できます。
+第5章では、これらのリンクはダミーテキスト’#’を使って無効にしていました。
+しかしルーティングについての知識もだいぶ増えてきたので、今回は実装することにしましょう。
+実際のページ作成は14.2.3まで行いませんが、ルーティングは今実装します (リスト 14.15)。
+このコードでは、resourcesブロックの内側で:memberメソッドを使っています。
+これは初登場のメソッドですが、まずはどんな動作をするのか推測してみてください。
+
+##..............................
+リスト 14.15: Usersコントローラにfollowingアクションとfollowersアクションを追加する
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root   'static_pages#home'
+  get    '/help',    to: 'static_pages#help'
+  get    '/about',   to: 'static_pages#about'
+  get    '/contact', to: 'static_pages#contact'
+  get    '/signup',  to: 'users#new'
+  get    '/login',   to: 'sessions#new'
+  post   '/login',   to: 'sessions#create'
+  delete '/logout',  to: 'sessions#destroy'
+  resources :users do
+    member do
+      get :following, :followers
+    end
+  end
+  resources :account_activations, only: [:edit]
+  resources :password_resets,     only: [:new, :create, :edit, :update]
+  resources :microposts,          only: [:create, :destroy]
+end
+#..............................
+
+この場合のURLは /users/1/following や /users/1/followers のようになるのではないかと推測した方もいると思います。
+そして、リスト 14.15のコードはまさにそれを行なっているのです。
+また、どちらもデータを表示するページなので、適切なHTTPメソッドはGETリクエストになります。
+したがって、getメソッドを使って適切なレスポンスを返すようにします。
+ちなみに、memberメソッドを使うとユーザーidが含まれているURLを扱うようになりますが、 idを指定せずにすべてのメンバーを表示するには、次のようにcollectionメソッドを使います。
+
+resources :users do
+  collection do
+    get :tigers
+  end
+end
+このコードは /users/tigers というURLに応答します (アプリケーションにあるすべてのtigerのリストを表示します)7。
+
+リスト 14.15によって生成されるルーティングテーブルを表 14.2に示します。
+この表で示したフォロー用とフォロワー用の名前付きルートを、今後の実装で使っていきます。
+
+HTTPリクエスト	URL	アクション	名前付きルート
+GET	/users/1/following	following	following_user_path(1)
+GET	/users/1/followers	followers	followers_user_path(1)
+表 14.2: カスタムルールで提供するリスト 14.15のRESTfulルート
+ルーティングを定義したので、統計情報のパーシャルを実装する準備が整いました。
+このパーシャルでは、divタグの中に2つのリンクを含めるようにします (リスト 14.16)。
+
+##..............................
+リスト 14.16: フォロワーの統計情報を表示するパーシャル
+#...............................
+app/views/shared/_stats.html.erb
+ <% @user ||= current_user %>
+<div class="stats">
+  <a href="<%= following_user_path(@user) %>">
+    <strong id="following" class="stat">
+      <%= @user.following.count %>
+    </strong>
+    following
+  </a>
+  <a href="<%= followers_user_path(@user) %>">
+    <strong id="followers" class="stat">
+      <%= @user.followers.count %>
+    </strong>
+    followers
+  </a>
+</div>
+#..............................
+
+このパーシャルはプロフィールページとHomeページの両方に表示されるので、リスト 14.16の最初の行では、次のコードで現在のユーザーを取得します。
+
+<% @user ||= current_user %>
+これはコラム 8.1でも説明したとおり、@userがnilでない場合 (つまりプロフィールページの場合) は何もせず、nilの場合 (つまりHomeページの場合) には@userにcurrent_userを代入するコードです。
+その後、フォローしているユーザーの人数を、次のように関連付けを使って計算します。
+
+@user.following.count
+これはフォロワーについても同様です。
+
+@user.followers.count
+上のコードは、リスト 13.24でマイクロポストの投稿数を表示した方法と同じです。
+あのときは次のように書きました。
+
+@user.microposts.count
+なお、今回も以前と同様に、Railsは高速化のためにデータベース内で合計を計算している点に注意してください。
+
+さて、一部の要素で、次のようにCSS idを指定していることにもぜひ注目してください。
+
+<strong id="following" class="stat">
+...
+</strong>
+こうしておくと、14.2.5でAjaxを実装するときに便利です。
+そこでは、一意のidを指定してページ要素にアクセスしています。
+
+これで統計情報パーシャルができあがります。
+Homeページにこの統計情報を表示するには、リスト 14.17のようにすると簡単です。
+
+##..............................
+リスト 14.17: Homeページにフォロワーの統計情報を追加する
+#...............................
+app/views/static_pages/home.html.erb
+ <% if logged_in? %>
+  <div class="row">
+    <aside class="col-md-4">
+      <section class="user_info">
+        <%= render 'shared/user_info' %>
+      </section>
+      <section class="stats">
+        <%= render 'shared/stats' %>
+      </section>
+      <section class="micropost_form">
+        <%= render 'shared/micropost_form' %>
+      </section>
+    </aside>
+    <div class="col-md-8">
+      <h3>Micropost Feed</h3>
+      <%= render 'shared/feed' %>
+    </div>
+  </div>
+<% else %>
+  .
+  .
+  .
+<% end %>
+#..............................
+
+統計情報にスタイルを与えるために、リスト 14.18のようにSCSSを追加しましょう (なお、このSCSSにはこの章で使うすべてのスタイルが含まれています)。
+変更の結果、Homeページは図 14.11のようになります。
+
+##..............................
+リスト 14.18: Homeページのサイドバー用のSCSS
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* sidebar */
+.
+.
+.
+.gravatar {
+  float: left;
+  margin-right: 10px;
+}
+
+.gravatar_edit {
+  margin-top: 15px;
+}
+
+.stats {
+  overflow: auto;
+  margin-top: 0;
+  padding: 0;
+  a {
+    float: left;
+    padding: 0 10px;
+    border-left: 1px solid $gray-lighter;
+    color: gray;
+    &:first-child {
+      padding-left: 0;
+      border: 0;
+    }
+    &:hover {
+      text-decoration: none;
+      color: blue;
+    }
+  }
+  strong {
+    display: block;
+  }
+}
+
+.user_avatars {
+  overflow: auto;
+  margin-top: 10px;
+  .gravatar {
+    margin: 1px 1px;
+  }
+  a {
+    padding: 0;
+  }
+}
+
+.users.follow {
+  padding: 0;
+}
+
+/* forms */
+.
+.
+.
+#..............................
+
+
+#.....................
+images/figures/home_page_follow_stats_3rd_edition
+  ==> home_page_follow_stats_3rd_edition.png
+図 14.11: Homeページにフォロー関連の統計情報を表示する
+#.....................
+
+この後すぐ、プロフィールにも統計情報パーシャルを表示しますが、今のうちにリスト 14.19のように [Follow] / [Unfollow] ボタン用のパーシャルも作成しましょう。
+
+##..............................
+リスト 14.19: フォロー/フォロー解除フォームのパーシャル
+#...............................
+app/views/users/_follow_form.html.erb
+ <% unless current_user?(@user) %>
+  <div id="follow_form">
+  <% if current_user.following?(@user) %>
+    <%= render 'unfollow' %>
+  <% else %>
+    <%= render 'follow' %>
+  <% end %>
+  </div>
+<% end %>
+#..............................
+
+このコードは、followとunfollowのパーシャルに作業を振っているだけです。
+パーシャルでは、Relationshipsリソース用の新しいルーティングが必要です。
+これを、リスト 13.30のMicropostsリソースの例に従って作成しましょう (リスト 14.20)。
+
+##..............................
+リスト 14.20: Relationshipリソース用のルーティングを追加する
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root                'static_pages#home'
+  get    'help'    => 'static_pages#help'
+  get    'about'   => 'static_pages#about'
+  get    'contact' => 'static_pages#contact'
+  get    'signup'  => 'users#new'
+  get    'login'   => 'sessions#new'
+  post   'login'   => 'sessions#create'
+  delete 'logout'  => 'sessions#destroy'
+  resources :users do
+    member do
+      get :following, :followers
+    end
+  end
+  resources :account_activations, only: [:edit]
+  resources :password_resets,     only: [:new, :create, :edit, :update]
+  resources :microposts,          only: [:create, :destroy]
+  resources :relationships,       only: [:create, :destroy]
+end
+#..............................
+
+フォロー/フォロー解除用のパーシャル自体は、リスト 14.21とリスト 14.22に示します。
+
+##..............................
+リスト 14.21: ユーザーをフォローするフォーム
+#...............................
+app/views/users/_follow.html.erb
+ <%= form_for(current_user.active_relationships.build) do |f| %>
+  <div><%= hidden_field_tag :followed_id, @user.id %></div>
+  <%= f.submit "Follow", class: "btn btn-primary" %>
+<% end %>
+#..............................
+
+##..............................
+リスト 14.22: ユーザーをフォロー解除するフォーム
+#...............................
+app/views/users/_unfollow.html.erb
+ <%= form_for(current_user.active_relationships.find_by(followed_id: @user.id),
+             html: { method: :delete }) do |f| %>
+  <%= f.submit "Unfollow", class: "btn" %>
+<% end %>
+#..............................
+
+これらの2つのフォームでは、いずれもform_forを使ってRelationshipモデルオブジェクトを操作しています。
+これらの2つのフォームの主な違いは、リスト 14.21は新しいリレーションシップを作成するのに対し、リスト 14.22は既存のリレーションシップを見つけ出すという点です。
+すなわち、前者はPOSTリクエストを Relationshipsコントローラに送信してリレーションシップをcreate (作成) し、後者はDELETEリクエストを送信してリレーションシップをdestroy (削除) するということです (これらのアクションは14.2.4で実装します)。
+最終的に、このフォロー/フォロー解除フォームにはボタンしかないことを理解していただけたと思います。
+しかし、それでもこのフォームはfollowed_idをコントローラに送信する必要があります。
+これを行うために、リスト 14.21のhidden_field_tagメソッドを使います。
+このメソッドは、次のフォーム用HTMLを生成します。
+
+<input id="followed_id" name="followed_id" type="hidden" value="3" />
+12.3のリスト 12.14で見たように、隠しフィールドのinputタグを使うことで、ブラウザ上に表示させずに適切な情報を含めることができます。
+
+これで14.23のときと同様に、パーシャルとしてフォロー用フォームをプロフィールページに表示できるようになりました。
+プロフィールには、図 14.12および図 14.13のようにそれぞれ [Follow]、[Unfollow] ボタンが表示されます。
+
+##..............................
+リスト 14.23: プロフィールページにフォロー用フォームとフォロワーの統計情報を追加する
+#...............................
+app/views/users/show.html.erb
+ <% provide(:title, @user.name) %>
+<div class="row">
+  <aside class="col-md-4">
+    <section class="user_info">
+      <h1>
+        <%= gravatar_for @user %>
+        <%= @user.name %>
+      </h1>
+    </section>
+    <section class="stats">
+      <%= render 'shared/stats' %>
+    </section>
+  </aside>
+  <div class="col-md-8">
+    <%= render 'follow_form' if logged_in? %>
+    <% if @user.microposts.any? %>
+      <h3>Microposts (<%= @user.microposts.count %>)</h3>
+      <ol class="microposts">
+        <%= render @microposts %>
+      </ol>
+      <%= will_paginate @microposts %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+
+#.....................
+images/figures/profile_follow_button_3rd_edition
+  ==> profile_follow_button_3rd_edition.png
+図 14.12: プロフィール画面 (/users/2) に [Follow] ボタンが表示されている
+#.....................
+
+
+#.....................
+images/figures/profile_unfollow_button_3rd_edition
+  ==> profile_unfollow_button_3rd_edition.png
+図 14.13: プロフィール画面 (/users/5) に [Unfollow] ボタンが表示されている
+#.....................
+
+これらのボタンはもうすぐ動作するようになります。
+実はこのボタンの実装には２通りの方法があります。
+１つは標準的な方法 (14.2.4)、もう１つはAjaxを使う方法 (14.2.5) です。
+でもその前に、フォローしているユーザーとフォロワーを表示するページをそれぞれ作成してHTMLインターフェイスを完成させてしまいましょう。
+
+演習
+ブラウザから /users/2 にアクセスし、フォローボタンが表示されていることを確認してみましょう。
+同様に、/users/5 では [Unfollow] ボタンが表示されているはずです。
+さて、/users/1 にアクセスすると、どのような結果が表示されるでしょうか?
+ブラウザからHomeページとプロフィールページを表示してみて、統計情報が正しく表示されているか確認してみましょう。
+Homeページに表示されている統計情報に対してテストを書いてみましょう。
+ヒント: リスト 13.28で示したテストに追加してみてください。
+同様にして、プロフィールページにもテストを追加してみましょう。
+
+#-----------------------------------------------------
+[__ 14.2.3 ] [Following] と [Followers] ページ
+#-----------------------------------------------------
+
+フォローしているユーザーを表示するページと、フォロワーを表示するページは、いずれもプロフィールページとユーザー一覧ページ (10.3.1) を合わせたような作りになるという点で似ています。
+どちらにもフォローの統計情報などのユーザー情報を表示するサイドバーと、ユーザーのリストがあります。
+さらに、サイドバーには小さめのユーザープロフィール画像のリンクを格子状に並べて表示する予定です。
+この要求に合うモックアップを図 14.14 (フォローしているユーザー用) および図 14.15 (フォロワー用) に示します。
+
+
+#.....................
+images/figures/following_mockup_bootstrap
+  ==> following_mockup_bootstrap.png
+図 14.14: フォローしているユーザー用ページのモックアップ
+#.....................
+
+
+#.....................
+images/figures/followers_mockup_bootstrap
+  ==> followers_mockup_bootstrap.png
+図 14.15: ユーザーのフォロワー用ページのモックアップ
+#.....................
+
+ここでの最初の作業は、フォローしているユーザーのリンクとフォロワーのリンクを動くようにすることです。
+ Twitterに倣って、どちらのページでもユーザーのログインを要求するようにします。
+そこで前回のアクセス制御と同様に、まずはテストから書いていきましょう。
+今回使うテストはリスト 14.24のとおりです。
+なお、リスト 14.24では表 14.2でまとめた名前付きルートを使っている点に注意してください。
+
+##..............................
+リスト 14.24: フォロー/フォロワーページの認可をテストする red
+#...............................
+test/controllers/users_controller_test.rb
+ require 'test_helper'
+
+class UsersControllerTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+    @other_user = users(:archer)
+  end
+  .
+  .
+  .
+  test "should redirect following when not logged in" do
+    get following_user_path(@user)
+    assert_redirected_to login_url
+  end
+
+  test "should redirect followers when not logged in" do
+    get followers_user_path(@user)
+    assert_redirected_to login_url
+  end
+end
+#..............................
+
+この実装には１つだけトリッキーな部分があります。
+それはUsersコントローラに2つの新しいアクションを追加する必要があるということです。
+これはリスト 14.15で定義した2つのルーティングにもとづいており、これらはそれぞれfollowingおよびfollowersと呼ぶ必要があります。
+それぞれのアクションでは、タイトルを設定し、ユーザーを検索し、@user.followingまたは@user.followersからデータを取り出し、ページネーションを行なって、ページを出力する必要があります。
+作成したコードをリスト 14.25に示します。
+
+##..............................
+リスト 14.25: followingアクションとfollowersアクション red
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  before_action :logged_in_user, only: [:index, :edit, :update, :destroy,
+                                        :following, :followers]
+  .
+  .
+  .
+  def following
+    @title = "Following"
+    @user  = User.find(params[:id])
+    @users = @user.following.paginate(page: params[:page])
+    render 'show_follow'
+  end
+
+  def followers
+    @title = "Followers"
+    @user  = User.find(params[:id])
+    @users = @user.followers.paginate(page: params[:page])
+    render 'show_follow'
+  end
+
+  private
+  .
+  .
+  .
+end
+#..............................
+
+本チュートリアルのいたるところで見てきたように、Railsは慣習に従って、アクションに対応するビューを暗黙的に呼び出します。
+例えば、showアクションの最後でshow.html.erbを呼び出す、といった具合です。
+一方で、リスト 14.25のいずれのアクションも、renderを明示的に呼び出し、show_followという同じビューを出力しています。
+したがって、作成が必要なビューはこれ1つです。
+renderで呼び出しているビューが同じである理由は、このERbはどちらの場合でもほぼ同じであり、リスト 14.26で両方の場合をカバーできるためです。
+
+##..............................
+リスト 14.26: フォローしているユーザーとフォロワーの両方を表示するshow_followビュー green
+#...............................
+app/views/users/show_follow.html.erb
+ <% provide(:title, @title) %>
+<div class="row">
+  <aside class="col-md-4">
+    <section class="user_info">
+      <%= gravatar_for @user %>
+      <h1><%= @user.name %></h1>
+      <span><%= link_to "view my profile", @user %></span>
+      <span><b>Microposts:</b> <%= @user.microposts.count %></span>
+    </section>
+    <section class="stats">
+      <%= render 'shared/stats' %>
+      <% if @users.any? %>
+        <div class="user_avatars">
+          <% @users.each do |user| %>
+            <%= link_to gravatar_for(user, size: 30), user %>
+          <% end %>
+        </div>
+      <% end %>
+    </section>
+  </aside>
+  <div class="col-md-8">
+    <h3><%= @title %></h3>
+    <% if @users.any? %>
+      <ul class="users follow">
+        <%= render @users %>
+      </ul>
+      <%= will_paginate %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+リスト 14.25にあるアクションは、２通りの方法でリスト 14.26のビューを呼び出します。
+“following”をとおって描画したビューを図 14.16に、“followers”をとおって描画したビューを図 14.17に示します。
+このとき、上のコードでは現在のユーザーを一切使っていない点に注目してください。
+したがって、他のユーザーのフォロワー一覧ページもうまく動きます (図 14.18)。
+
+
+#.....................
+images/figures/user_following_3rd_edition
+  ==> user_following_3rd_edition.png
+図 14.16: 現在のユーザーにフォローされているユーザーを表示する
+#.....................
+
+
+#.....................
+images/figures/user_followers_3rd_edition
+  ==> user_followers_3rd_edition.png
+図 14.17: ユーザーのフォロワーを表示する
+#.....................
+
+
+#.....................
+images/figures/diferent_user_followers_3rd_edition
+  ==> diferent_user_followers_3rd_edition.png
+図 14.18: 別のユーザーのフォロワーを表示する
+#.....................
+
+なお、リスト 14.25でbeforeフィルターを既に実装しているため、この時点でリスト 14.24のテストは green になっているはずです。
+
+##..............................
+リスト 14.27: green
+#...............................
+$ rails test
+#..............................
+
+次に、show_followの描画結果を確認するため、統合テストを書いていきます。
+ただし今回の統合テストは基本的なテストだけに留めており、網羅的なテストにはしていません。
+これは5.3.4でも指摘したように、HTML構造を網羅的にチェックするテストは壊れやすく、生産性を逆に落としかねないからです。
+したがって今回は、正しい数が表示されているかどうかと、正しいURLが表示されているかどうかの２つのテストを書きます。
+
+いつものように、統合テストを生成するところから始めます。
+
+$ rails generate integration_test following
+      invoke  test_unit
+      create    test/integration/following_test.rb
+今度はテストデータをいくつか揃えます。
+リレーションシップ用のfixtureにデータを追加しましょう。
+13.2.3では、次のように書くことで、
+
+orange:
+  content: "I just ate an orange!"
+  created_at: <%= 10.minutes.ago %>
+  user: michael
+ユーザーとマイクロポストを関連付けできたことを思い出してください。
+また、上のコードではユーザー名を書いていましたが、
+
+user: michael
+このようにユーザーidでも関連付けできます。
+
+user_id: 1
+この例を参考にしてRelationship用のfixtureにテストデータを追加すると、リスト 14.28のようになります。
+
+##..............................
+リスト 14.28: following/followerをテストするためのリレーションシップ用fixture
+#...............................
+test/fixtures/relationships.yml
+ one:
+  follower: michael
+  followed: lana
+
+two:
+  follower: michael
+  followed: malory
+
+three:
+  follower: lana
+  followed: michael
+
+four:
+  follower: archer
+  followed: michael
+#..............................
+
+リスト 14.28のfixtureでは、前半の2つでMichaelがLanaとMaloryをフォローし、後半の2つでLanaとArcherがMichaelをフォローしています。
+あとは、正しい数かどうかを確認するために、assert_matchメソッド (リスト 13.28) を使ってプロフィール画面のマイクロポスト数をテストします。
+さらに、正しいURLかどうかをテストするコードも加えると、リスト 14.29のようになります。
+
+##..............................
+リスト 14.29: following/followerページのテスト green
+#...............................
+test/integration/following_test.rb
+ require 'test_helper'
+
+class FollowingTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+    log_in_as(@user)
+  end
+
+  test "following page" do
+    get following_user_path(@user)
+    assert_not @user.following.empty?
+    assert_match @user.following.count.to_s, response.body
+    @user.following.each do |user|
+      assert_select "a[href=?]", user_path(user)
+    end
+  end
+
+  test "followers page" do
+    get followers_user_path(@user)
+    assert_not @user.followers.empty?
+    assert_match @user.followers.count.to_s, response.body
+    @user.followers.each do |user|
+      assert_select "a[href=?]", user_path(user)
+    end
+  end
+end
+#..............................
+
+なお、リスト 14.29では、このようなコードを加えていますが、
+
+assert_not @user.following.empty?
+このコードは次のコードを確かめるためのテストであって、
+
+@user.following.each do |user|
+  assert_select "a[href=?]", user_path(user)
+end
+無意味なテストではないことに注意してください (followersについても同様です)。
+つまり、もし@user.following.empty?の結果がtrueであれば、assert_select内のブロックが実行されなくなるため、その場合においてテストが適切なセキュリティモデルを確認できなくなることを防いでいます。
+
+話を戻して、上の変更を加えるとテストが greenになるはずです。
+確認してみましょう。
+
+##..............................
+リスト 14.30: green
+#...............................
+$ rails test
+#..............................
+
+演習
+ブラウザから /users/1/followers と /users/1/following を開き、それぞれが適切に表示されていることを確認してみましょう。
+サイドバーにある画像は、リンクとしてうまく機能しているでしょうか?
+リスト 14.29のassert_selectに関連するコードをコメントアウトしてみて、テストが正しく red に変わることを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 14.2.4 ] [Follow] ボタン (基本編)
+#-----------------------------------------------------
+
+ビューが整ってきました。
+いよいよ [Follow] / [Unfollow] ボタンを動作させましょう。
+フォローとフォロー解除はそれぞれリレーションシップの作成と削除に対応しているため、まずはRelationshipsコントローラが必要です。
+いつものようにコントローラを生成しましょう。
+
+$ rails generate controller Relationships
+リスト 14.32でも説明しますが、Relationshipsコントローラのアクションでアクセス制御することはそこまで難しくありません。
+しかし、前回のアクセス制御のときと同様に最初にテストを書き、それをパスするように実装することでセキュリティモデルを確立させていきましょう。
+今回はまず、コントローラのアクションにアクセスするとき、ログイン済みのユーザーであるかどうかをチェックします。
+もしログインしていなければログインページにリダイレクトされるので、Relationshipのカウントが変わっていないことを確認します (リスト 14.31)。
+
+##..............................
+リスト 14.31: リレーションシップの基本的なアクセス制御に対するテスト red
+#...............................
+test/controllers/relationships_controller_test.rb
+ require 'test_helper'
+
+class RelationshipsControllerTest < ActionDispatch::IntegrationTest
+
+  test "create should require logged-in user" do
+    assert_no_difference 'Relationship.count' do
+      post relationships_path
+    end
+    assert_redirected_to login_url
+  end
+
+  test "destroy should require logged-in user" do
+    assert_no_difference 'Relationship.count' do
+      delete relationship_path(relationships(:one))
+    end
+    assert_redirected_to login_url
+  end
+end
+#..............................
+
+次に、リスト 14.31のテストをパスさせるために、logged_in_userフィルターをRelationshipsコントローラのアクションに対して追加します (リスト 14.32)。
+
+##..............................
+リスト 14.32: リレーションシップのアクセス制御 green
+#...............................
+app/controllers/relationships_controller.rb
+ class RelationshipsController < ApplicationController
+  before_action :logged_in_user
+
+  def create
+  end
+
+  def destroy
+  end
+end
+#..............................
+
+[Follow] / [Unfollow] ボタンを動作させるためには、フォーム (リスト 14.21とリスト 14.22) から送信されたパラメータを使って、followed_idに対応するユーザーを見つけてくる必要があります。
+その後、見つけてきたユーザーに対して適切にfollow/unfollowメソッド (リスト 14.10) を使います。
+このすべてを実装した結果を、リスト 14.33に示します。
+
+##..............................
+リスト 14.33: Relationshipsコントローラ
+#...............................
+app/controllers/relationships_controller.rb
+ class RelationshipsController < ApplicationController
+  before_action :logged_in_user
+
+  def create
+    user = User.find(params[:followed_id])
+    current_user.follow(user)
+    redirect_to user
+  end
+
+  def destroy
+    user = Relationship.find(params[:id]).followed
+    current_user.unfollow(user)
+    redirect_to user
+  end
+end
+#..............................
+
+リスト 14.33を見てみれば、先ほどのセキュリティ問題が実はそれほど重大なものではないことを理解いただけると思います。
+もしログインしていないユーザーが (curlなどのコマンドラインツールなどを使って) これらのアクションに直接アクセスするようなことがあれば、current_userはnilになり、どちらのメソッドでも2行目で例外が発生します。
+エラーにはなりますが、アプリケーションやデータに影響は生じません。
+このままでも支障はありませんが、やはりこのような例外には頼らない方がよいので、上ではひと手間かけてセキュリティのためのレイヤーを追加しました。
+
+これで、フォロー/フォロー解除の機能が完成しました。
+どのユーザーも、他のユーザーをフォローしたりフォロー解除したりできます。
+ブラウザ上でボタンをクリックして、確かめてみてください。
+振る舞いを検証する統合テストは14.2.6で実装することにして、まずは2番目のユーザーをフォローする前の状態を図 14.19に、フォローした結果を図 14.20にそれぞれ示します。
+
+
+#.....................
+images/figures/unfollowed_user
+  ==> unfollowed_user.png
+図 14.19: フォローしていないユーザーの画面
+#.....................
+
+
+#.....................
+images/figures/followed_user
+  ==> followed_user.png
+図 14.20: ユーザーをフォローした結果
+#.....................
+
+演習
+ブラウザ上から /users/2 を開き、[Follow] と [Unfollow] を実行してみましょう。
+うまく機能しているでしょうか?
+先ほどの演習を終えたら、Railsサーバーのログを見てみましょう。
+フォロー/フォロー解除が実行されると、それぞれどのテンプレートが描画されているでしょうか?
+
+#-----------------------------------------------------
+[__ 14.2.5 ] [Follow] ボタン (Ajax編)
+#-----------------------------------------------------
+
+フォロー関連の機能の実装はこのとおり完了しましたが、ステータスフィードに取りかかる前にもう一つだけ機能を洗練させてみたいと思います。
+14.2.4では、Relationshipsコントローラのcreateアクションと destroyアクションを単に元のプロフィールにリダイレクトしていました。
+つまり、ユーザーはプロフィールページを最初に表示し、それからユーザーをフォローし、その後すぐ元のページにリダイレクトされるという流れになります。
+ユーザーをフォローした後、本当にそのページから離れて元のページに戻らないといけないのでしょうか。
+この点を考えなおしてみましょう。
+
+これはAjaxを使うことで解決できます。
+Ajaxを使えば、Webページからサーバーに「非同期」で、ページを移動することなくリクエストを送信することができます8。
+WebフォームにAjaxを採用するのは今や当たり前になりつつあるので、RailsでもAjaxを簡単に実装できるようになっています。
+フォロー用とフォロー解除用のパーシャルをこれに沿って更新するのは簡単です。
+次のコードがあるとすると、
+
+form_for
+上のコードを次のように置き換えるだけです。
+
+form_for ..., remote: true
+たったこれだけで、Railsは自動的にAjaxを使うようになります。
+具体的な更新の結果を、リスト 14.34とリスト 14.35に示します。
+
+##..............................
+リスト 14.34: Ajaxを使ったフォローフォーム
+#...............................
+app/views/users/_follow.html.erb
+ <%= form_for(current_user.active_relationships.build, remote: true) do |f| %>
+  <div><%= hidden_field_tag :followed_id, @user.id %></div>
+  <%= f.submit "Follow", class: "btn btn-primary" %>
+<% end %>
+#..............................
+
+##..............................
+リスト 14.35: Ajaxを使ったフォロー解除フォーム
+#...............................
+app/views/users/_unfollow.html.erb
+ <%= form_for(current_user.active_relationships.find_by(followed_id: @user.id),
+             html: { method: :delete },
+             remote: true) do |f| %>
+  <%= f.submit "Unfollow", class: "btn" %>
+<% end %>
+#..............................
+
+ERbによって実際に生成されるHTMLはそれほど重要ではありませんが、興味がある方のために、次にその核心部分をお見せします。
+
+<form action="/relationships/117" class="edit_relationship" data-remote="true"
+      id="edit_relationship_117" method="post">
+  .
+  .
+  .
+</form>
+ここでは、formタグの内部でdata-remote="true"を設定しています。
+これは、JavaScriptによるフォーム操作を許可することをRailsに知らせるためのものです。
+Rails 2以前では、完全なJavaScriptのコードを挿入する必要がありました。
+しかし先ほどの例で見たように、現在のRailsではHTMLプロパティを使って簡単にAjaxが扱えるようになっています。
+これは、JavaScriptを前面に出すべからずという哲学に従っています。
+
+フォームの更新が終わったので、今度はこれに対応するRelationshipsコントローラを改造して、Ajaxリクエストに応答できるようにしましょう。
+こういったリクエストの種類によって応答を場合分けするときは、respond_toメソッドというメソッドを使います。
+
+respond_to do |format|
+  format.html { redirect_to user }
+  format.js
+end
+この文法は少々変わっていて混乱を招く可能性がありますが、上の (ブロック内の) コードのうち、いずれかの1行が実行されるという点が重要です (このためrespond_toメソッドは、上から順に実行する逐次処理というより、if文を使った分岐処理に近いイメージです)。
+RelationshipsコントローラでAjaxに対応させるために、respond_toメソッドをcreateアクションとdestroyアクション (リスト 14.33) にそれぞれ追加してみましょう。
+変更の結果をリスト 14.36に示します。
+このとき、ユーザーのローカル変数 (user) をインスタンス変数 (@user) に変更した点に注目してください。
+これは、リスト 14.33のときはインスタンス変数は必要なかったのですが、リスト 14.34やリスト 14.35を実装したことにより、インスタンス変数が必要になったためです。
+
+##..............................
+リスト 14.36: RelationshipsコントローラでAjaxリクエストに対応する
+#...............................
+app/controllers/relationships_controller.rb
+ class RelationshipsController < ApplicationController
+  before_action :logged_in_user
+
+  def create
+    @user = User.find(params[:followed_id])
+    current_user.follow(@user)
+    respond_to do |format|
+      format.html { redirect_to @user }
+      format.js
+    end
+  end
+
+  def destroy
+    @user = Relationship.find(params[:id]).followed
+    current_user.unfollow(@user)
+    respond_to do |format|
+      format.html { redirect_to @user }
+      format.js
+    end
+  end
+end
+#..............................
+
+(訳注: ビューで変数を使うため、userが@userに変わった点にも気をつけてください。)
+
+リスト 14.36でAjaxリクエストに対応したので、今度はブラウザ側でJavaScriptが無効になっていた場合 (Ajaxリクエストが送れない場合) でもうまく動くようにします (リスト 14.37)。
+
+##..............................
+リスト 14.37: JavaScriptが無効になっていたときのための設定
+#...............................
+config/application.rb
+ require File.expand_path('../boot', __FILE__)
+.
+.
+.
+module SampleApp
+  class Application < Rails::Application
+    .
+    .
+    .
+    # 認証トークンをremoteフォームに埋め込む
+    config.action_view.embed_authenticity_token_in_remote_forms = true
+  end
+end
+#..............................
+
+一方で、JavaScriptが有効になっていても、まだ十分に対応できていない部分があります。
+というのも、Ajaxリクエストを受信した場合は、Railsが自動的にアクションと同じ名前を持つJavaScript用の埋め込みRuby (.js.erb) ファイル (create.js.erbやdestroy.js.erbなど) を呼び出すからです。
+ご想像のとおり、これらのファイルではJavaScriptと埋め込みRuby (ERb) をミックスして現在のページに対するアクションを実行することができます。
+ユーザーをフォローしたときやフォロー解除したときにプロフィールページを更新するために、私たちがこれから作成および編集しなければならないのは、まさにこれらのファイルです。
+
+JS-ERbファイルの内部では、DOM (Document Object Model) を使ってページを操作するため、RailsがjQuery JavaScriptヘルパーを自動的に提供しています。
+これによりjQueryライブラリの膨大なDOM操作用メソッドが使えるようになりますが、13.4.2で見たように今回使うのはわずか2つです。
+１つずつ見ていきましょう。
+まずはドル記号 ($) とCSS idを使って、DOM要素にアクセスする文法について知る必要があります。
+例えばfollow_formの要素をjQueryで操作するには、次のようにアクセスします。
+
+$("#follow_form")
+リスト 14.19では、これはフォームを囲むdivタグであり、フォームそのものではなかったことを思い出してください。
+jQueryの文法はCSSの記法から影響を受けており、#シンボルを使ってCSSのidを指定します。
+ご想像のとおり、jQueryはCSSと同様、ドット.を使ってCSSクラスを操作できます。
+
+次に必要なメソッドはhtmlです。
+これは、引数の中で指定された要素の内側にあるHTMLを更新します。
+例えばフォロー用フォーム全体を"foobar"という文字列で置き換えたい場合は、次のようなコードになります。
+
+$("#follow_form").html("foobar")
+純粋なJavaScriptと異なり、JS-ERbファイルでは組み込みRuby (ERb) が使えます。
+create.js.erbファイルでは、フォロー用のフォームをunfollowパーシャルで更新し、フォロワーのカウントを更新するのにERbを使っています (もちろんこれは、フォローに成功した場合の動作です)。
+変更の結果をリスト 14.38に示します。
+このコードではescape_javascriptメソッドを使っている点に注目してください。
+このメソッドは、JavaScriptファイル内にHTMLを挿入するときに実行結果をエスケープするために必要です。
+
+##..............................
+リスト 14.38: JavaScriptと埋め込みRubyを使ってフォローの関係性を作成する
+#...............................
+app/views/relationships/create.js.erb
+ $("#follow_form").html("<%= escape_javascript(render('users/unfollow')) %>");
+$("#followers").html('<%= @user.followers.count %>');
+#..............................
+
+各行の末尾にセミコロン ; があることに注目してください。
+これはプログラミング言語によくある文法で、古くは1950年代中ごろに開発されたALGOLまで遡ります。
+
+destroy.js.erbファイルの方も同様です (リスト 14.39)。
+
+##..............................
+リスト 14.39: Ruby JavaScript (RJS) を使ってフォローの関係性を削除する
+#...............................
+app/views/relationships/destroy.js.erb
+ $("#follow_form").html("<%= escape_javascript(render('users/follow')) %>");
+$("#followers").html('<%= @user.followers.count %>');
+#..............................
+
+これらのコードにより、プロフィールページを更新させずにフォローとフォロー解除ができるようになったはずです。
+
+演習
+ブラウザから /users/2 にアクセスし、うまく動いているかどうか確認してみましょう。
+先ほどの演習で確認が終わったら、Railsサーバーのログを閲覧し、フォロー/フォロー解除を実行した直後のテンプレートがどうなっているか確認してみましょう。
+
+#-----------------------------------------------------
+[__ 14.2.6 ] フォローをテストする
+#-----------------------------------------------------
+
+フォローボタンが動くようになったので、バグを検知するためのシンプルなテストを書いていきましょう。
+ユーザーのフォローに対するテストでは、 /relationshipsに対してPOSTリクエストを送り、フォローされたユーザーが1人増えたことをチェックします。
+具体的なコードは次のとおりです。
+
+assert_difference '@user.following.count', 1 do
+  post relationships_path, params: { followed_id: @other.id }
+end
+これは標準的なフォローに対するテストではありますが、Ajax版もやり方は大体同じです。
+Ajaxのテストでは、xhr :trueオプションを使うようにするだけです。
+
+assert_difference '@user.following.count', 1 do
+  post relationships_path, params: { followed_id: @other.id }, xhr: true
+end
+ここで使っているxhr (XmlHttpRequest) というオプションをtrueに設定すると、Ajaxでリクエストを発行するように変わります。
+したがって、リスト 14.36のrespond_toでは、JavaScriptに対応した行が実行されるようになります。
+
+また、ユーザーをフォロー解除するときも構造はほとんど同じで、postメソッドをdeleteメソッドに置き換えてテストします。
+つまり、そのユーザーのidとリレーションシップのidを使ってDELETEリクエストを送信し、フォローしている数が1つ減ることを確認します。
+したがって、実際に加えるテストは、
+
+assert_difference '@user.following.count', -1 do
+  delete relationship_path(relationship)
+end
+上の従来どおりのテストと、下のAjax用のテストの２つになります。
+
+assert_difference '@user.following.count', -1 do
+  delete relationship_path(relationship), xhr: true
+end
+これらのテストをまとめた結果を、リスト 14.40に示します。
+
+##..............................
+リスト 14.40: [Follow] / [Unfollow] ボタンをテストする green
+#...............................
+test/integration/following_test.rb
+ require 'test_helper'
+
+class FollowingTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user  = users(:michael)
+    @other = users(:archer)
+    log_in_as(@user)
+  end
+  .
+  .
+  .
+  test "should follow a user the standard way" do
+    assert_difference '@user.following.count', 1 do
+      post relationships_path, params: { followed_id: @other.id }
+    end
+  end
+
+  test "should follow a user with Ajax" do
+    assert_difference '@user.following.count', 1 do
+      post relationships_path, xhr: true, params: { followed_id: @other.id }
+    end
+  end
+
+  test "should unfollow a user the standard way" do
+    @user.follow(@other)
+    relationship = @user.active_relationships.find_by(followed_id: @other.id)
+    assert_difference '@user.following.count', -1 do
+      delete relationship_path(relationship)
+    end
+  end
+
+  test "should unfollow a user with Ajax" do
+    @user.follow(@other)
+    relationship = @user.active_relationships.find_by(followed_id: @other.id)
+    assert_difference '@user.following.count', -1 do
+      delete relationship_path(relationship), xhr: true
+    end
+  end
+end
+#..............................
+
+この時点では、テストは greenになるはずです。
+
+##..............................
+リスト 14.41: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 14.36のrespond_toブロック内の各行を順にコメントアウトしていき、テストが正しくエラーを検知できるかどうか確認してみましょう。
+実際、どのテストケースが落ちたでしょうか?
+リスト 14.40のxhr: trueがある行のうち、片方のみを削除するとどういった結果になるでしょうか? このとき発生する問題の原因と、なぜ先ほどの演習で確認したテストがこの問題を検知できたのか考えてみてください。
+
+#-----------------------------
+[_ 14.3 ] ステータスフィード
+#-----------------------------
+
+ついに、サンプルアプリケーションの山頂が目の前に現れました。
+最後の難関、ステータスフィードの実装に取りかかりましょう。
+この節で扱われている内容は、本書の中でも最も高度なものです。
+完全なステータスフィードは、13.3.3で扱ったプロトフィードをベースにします。
+現在のユーザーにフォローされているユーザーのマイクロポストの配列を作成し、現在のユーザー自身のマイクロポストと合わせて表示します。
+このセクションを通して、複雑さを増したフィードの実装に進んでいきます。
+これを実現するためには、RailsとRubyの高度な機能の他に、SQLプログラミングの技術も必要です。
+
+手強い課題に挑むのですから、ここで実装すべき内容を慎重に見直すことが重要です。
+図 14.5でお見せしたステータスフィードの最終形を図 14.21に再度掲載します。
+
+
+#.....................
+images/figures/page_flow_home_page_feed_mockup_bootstrap
+  ==> page_flow_home_page_feed_mockup_bootstrap.png
+図 14.21: ステータスフィード付きのHomeページのモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 14.3.1 ] 動機と計画
+#-----------------------------------------------------
+
+ステータスフィードの基本的なアイデアはシンプルです。
+図 14.22に、micropostsのサンプルデータ付きのデータモデルとその結果を示します。
+図の矢印で示されているように、この目的は、現在のユーザーによってフォローされているユーザーに対応するユーザーidを持つマイクロポストを取り出し、同時に現在のユーザー自身のマイクロポストも一緒に取り出すことです。
+
+
+#.....................
+images/figures/user_feed
+  ==> user_feed.png
+図 14.22: id 1のユーザーがid 2、7、8、10をフォローしているときのフィード
+#.....................
+
+どのようにフィードを実装するのかはまだ明確ではありませんが、テストについてはやや明確そうなので、(コラム 3.3のガイドラインに従って) まずはテストから書いていくことにします。
+このテストで重要なことは、フィードに必要な３つの条件を満たすことです。
+具体的には、1) フォローしているユーザーのマイクロポストがフィードに含まれていること。
+2) 自分自身のマイクロポストもフィードに含まれていること。
+3) フォローしていないユーザーのマイクロポストがフィードに含まれていないこと、の３つです。
+
+詳しくはリスト 14.28で見ていきますが、まずはMichaelがLanaをフォローしていて、Archerをフォローしていないという状況を作ってみましょう。
+この状況のMichaelのフィードでは、Lanaと自分自身の投稿が見えていて、Archerの投稿は見えないことになります (リスト 10.47とリスト 13.53のfixtureファイルが参考になります)。
+先ほどの３つの条件をアサーションに変換して、Userモデル (リスト 13.46) にfeedメソッドがあることに注意しながら、更新したUserモデルに対するテストを書いてみましょう。
+結果をリスト 14.42に示します。
+
+##..............................
+リスト 14.42: ステータスフィードのテスト red
+#...............................
+test/models/user_test.rb
+ require 'test_helper'
+
+class UserTest < ActiveSupport::TestCase
+  .
+  .
+  .
+  test "feed should have the right posts" do
+    michael = users(:michael)
+    archer  = users(:archer)
+    lana    = users(:lana)
+    # フォローしているユーザーの投稿を確認
+    lana.microposts.each do |post_following|
+      assert michael.feed.include?(post_following)
+    end
+    # 自分自身の投稿を確認
+    michael.microposts.each do |post_self|
+      assert michael.feed.include?(post_self)
+    end
+    # フォローしていないユーザーの投稿を確認
+    archer.microposts.each do |post_unfollowed|
+      assert_not michael.feed.include?(post_unfollowed)
+    end
+  end
+end
+#..............................
+
+もちろん、現在のフィードはただのプロトタイプなので、このテストは redになるはずです。
+
+##..............................
+リスト 14.43: red
+#...............................
+$ rails test
+#..............................
+
+演習
+マイクロポストのidが正しく並んでいると仮定して (すなわち若いidの投稿ほど古くなる前提で)、図 14.22のデータセットでuser.feed.map(&:id)を実行すると、どのような結果が表示されるでしょうか? 考えてみてください。
+ヒント: 13.1.4で実装したdefault_scopeを思い出してください。
+
+#-----------------------------------------------------
+[__ 14.3.2 ] フィードを初めて実装する
+#-----------------------------------------------------
+
+ステータスフィードに対する要件定義はリスト 14.42のテストで明確になったので (つまりこのテストにパスすれば良いので)、早速フィードの実装に着手してみましょう。
+最終的なフィードの実装はやや込み入っているため、細かい部品を1つずつ確かめながら導入していきます。
+最初に、このフィードで必要なクエリについて考えましょう。
+ここで必要なのは、micropostsテーブルから、あるユーザー (つまり自分自身) がフォローしているユーザーに対応するidを持つマイクロポストをすべて選択 (select) することです。
+このクエリを模式的に書くと次のようになります。
+
+SELECT * FROM microposts
+WHERE user_id IN (<list of ids>) OR user_id = <user id>
+上のコードを書く際に、SQLがINというキーワードをサポートしていることを前提にしています (大丈夫、実際にサポートされています)。
+このキーワードを使うことで、idの集合の内包 (set inclusion) に対してテストを行えます。
+
+13.3.3のプロトフィードでは、上のような選択を行うためにActive Recordのwhereメソッドを使っていることを思い出してください (リスト 13.46)。
+このときに選択すべき対象はシンプルで、現在のユーザーに対応するユーザーidを持つマイクロポストを選択すればよかったのでした。
+
+Micropost.where("user_id = ?", id)
+今回必要になる選択は、上よりも少し複雑で、例えば次のような形になります。
+
+Micropost.where("user_id IN (?) OR user_id = ?", following_ids, id)
+これらの条件から、フォローされているユーザーに対応するidの配列が必要であることがわかってきました。
+これを行う方法の1つは、Rubyのmapメソッドを使うことです。
+このメソッドはすべての「列挙可能 (enumerable)」なオブジェクト (配列やハッシュなど、要素の集合で構成されるあらゆるオブジェクト) で使えます9。
+なお、このメソッドは4.3.2でも出てきました。
+他の例題として、mapメソッドを使って配列を文字列に変換すると、次のようになります。
+
+$ rails console
+>> [1, 2, 3, 4].map { |i| i.to_s }
+=> ["1", "2", "3", "4"]
+上に示したような状況では、各要素に対して同じメソッドが実行されます。
+これは非常によく使われる方法であり、次のようにアンパサンド (Ampersand) & と、メソッドに対応するシンボルを使った短縮表記 (4.3.2) が使えます。
+この短縮表記であれば、変数iを使わずに済みます。
+
+>> [1, 2, 3, 4].map(&:to_s)
+=> ["1", "2", "3", "4"]
+この結果に対してjoinメソッド (4.3.1) を使うと、idの集合をカンマ区切りの文字列として繋げることができます。
+
+>> [1, 2, 3, 4].map(&:to_s).join(', ')
+=> "1, 2, 3, 4"
+上のコードを使えば、user.followingにある各要素のidを呼び出し、フォローしているユーザーのidを配列として扱うことができます。
+例えばデータベースの最初のユーザーに対して実行すると、次のような結果になります。
+
+>> User.first.following.map(&:id)
+=> [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+実際、この手法は実に便利なので、Active Recordでは次のようなメソッドも用意されています。
+
+>> User.first.following_ids
+=> [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+このfollowing_idsメソッドは、has_many :followingの関連付けをしたときにActive Recordが自動生成したものです (リスト 14.8)。
+これにより、user.followingコレクションに対応するidを得るためには、関連付けの名前の末尾に_idsを付け足すだけで済みます。
+結果として、フォローしているユーザーidの文字列は、次のようにして取得することができます。
+
+>> User.first.following_ids.join(', ')
+=> "3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+42, 43, 44, 45, 46, 47, 48, 49, 50, 51
+なお、以上は説明のためのコードであり、実際にSQL文字列に挿入するときは、このように記述する必要はありません。
+実は、?を内挿すると自動的にこの辺りの面倒を見てくれます。
+さらに、データベースに依存する一部の非互換性まで解消してくれます。
+つまり、ここではfollowing_idsメソッドをそのまま使えばよいだけなのです。
+結果、最初に想像していたとおり、
+
+Micropost.where("user_id IN (?) OR user_id = ?", following_ids, id)
+というコードが無事に動きました! 作成したコードをリスト 14.44に示します。
+
+##..............................
+リスト 14.44: とりあえず動くフィードの実装 green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # パスワード再設定の期限が切れている場合はtrueを返す
+  def password_reset_expired?
+    reset_sent_at < 2.hours.ago
+  end
+
+  # ユーザーのステータスフィードを返す
+  def feed
+    Micropost.where("user_id IN (?) OR user_id = ?", following_ids, id)
+  end
+
+  # ユーザーをフォローする
+  def follow(other_user)
+    following << other_user
+  end
+  .
+  .
+  .
+end
+#..............................
+
+これでテストは greenになるはずです。
+
+##..............................
+リスト 14.45: green
+#...............................
+$ rails test
+#..............................
+
+いくつかのアプリケーションにおいては、この初期実装だけで目的が達成され、十分に思えるかもしれません。
+しかしリスト 14.44にはまだ足りないものがあります。
+それが何なのか、次に進む前に考えてみてください (ヒント: フォローしているユーザーが5,000人もいたらどうなるでしょうか?)。
+
+演習
+リスト 14.44において、現在のユーザー自身の投稿を含めないようにするにはどうすれば良いでしょうか? また、そのような変更を加えると、リスト 14.42のどのテストが失敗するでしょうか?
+リスト 14.44において、フォローしているユーザーの投稿を含めないようにするにはどうすれば良いでしょうか? また、そのような変更を加えると、リスト  14.42のどのテストが失敗するでしょうか?
+リスト 14.44において、フォローしていないユーザーの投稿を含めるためにはどうすれば良いでしょうか? また、そのような変更を加えると、リスト 14.42のどのテストが失敗するでしょうか? ヒント: 自分自身とフォローしているユーザー、そしてそれ以外という集合は、いったいどういった集合を表すのか考えてみてください。
+
+#-----------------------------------------------------
+[__ 14.3.3 ] サブセレクト
+#-----------------------------------------------------
+
+先ほどのヒントで察した人もいると思いますが、14.3.2のフィードの実装は、投稿されたマイクロポストの数が膨大になったときにうまくスケールしません。
+つまり、フォローしているユーザーが5,000人程度になるとWebサービス全体が遅くなる可能性があります。
+この節では、フォローしているユーザー数に応じてスケールできるように、ステータスフィードを改善していきましょう。
+
+14.3.2で示したコードの問題点は、following_idsでフォローしているすべてのユーザーをデータベースに問い合わせし、さらに、フォローしているユーザーの完全な配列を作るために再度データベースに問い合わせしている点です。
+リスト 14.44の条件では、集合に内包されているかどうかだけしかチェックされていないため、この部分はもっと効率的なコードに置き換えられるはずです。
+また、SQLは本来このような集合の操作に最適化されています。
+実際、このような問題は、SQLのサブセレクト (subselect) を使うと解決できます。
+
+まずはリスト 14.46でコードを若干修正し、フィードをリファクタリングすることから始めましょう。
+
+##..............................
+リスト 14.46: whereメソッド内の変数に、キーと値のペアを使う green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # ユーザーのステータスフィードを返す
+  def feed
+    Micropost.where("user_id IN (:following_ids) OR user_id = :user_id",
+     following_ids: following_ids, user_id: id)
+  end
+  .
+  .
+  .
+end
+#..............................
+
+上の実装では、これまでのコード
+
+Micropost.where("user_id IN (?) OR user_id = ?", following_ids, id)
+を次のように置き換えました。
+
+Micropost.where("user_id IN (:following_ids) OR user_id = :user_id",
+    following_ids: following_ids, user_id: id)
+前者の疑問符を使った文法も便利ですが、同じ変数を複数の場所に挿入したい場合は、後者の置き換え後の文法を使う方がより便利です。
+
+上の説明が暗に示すように、これからSQLクエリにもう1つのuser_idを追加します。
+特に、次のRubyコードは、
+
+following_ids
+このようなSQLに置き換えることができます。
+
+following_ids = "SELECT followed_id FROM relationships
+                 WHERE  follower_id = :user_id"
+このコードをSQLのサブセレクトとして使います。
+つまり、「ユーザー1がフォローしているユーザーすべてを選択する」というSQLを既存のSQLに内包させる形になり、結果としてSQLは次のようになります。
+
+SELECT * FROM microposts
+WHERE user_id IN (SELECT followed_id FROM relationships
+                  WHERE  follower_id = 1)
+      OR user_id = 1
+このサブセレクトは集合のロジックを (Railsではなく) データベース内に保存するので、より効率的にデータを取得することができます。
+
+これで基礎を固めることができましたので、リスト 14.47のようにもっと効率的なフィードを実装する準備ができました。
+(ここに記述されているコードは生のSQLを表す文字列であり、following_idsという文字列はエスケープされているのではなく、見やすさのために式展開しているだけだという点に注意してください。)
+
+##..............................
+リスト 14.47: フィードの最終的な実装 green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # ユーザーのステータスフィードを返す
+  def feed
+    following_ids = "SELECT followed_id FROM relationships
+                     WHERE follower_id = :user_id"
+    Micropost.where("user_id IN (#{following_ids})
+                     OR user_id = :user_id", user_id: id)
+  end
+  .
+  .
+  .
+end
+#..............................
+
+このコードはRailsとRubyとSQLのコードが複雑に絡み合っていて厄介ですが、ちゃんと動作します。
+
+##..............................
+リスト 14.48: green
+#...............................
+$ rails test
+#..............................
+
+もちろん、サブセレクトを使えばいくらでもスケールできるなどということはありません。
+大規模なWebサービスでは、バックグラウンド処理を使ってフィードを非同期で生成するなどのさらなる改善が必要でしょう。
+ただし、Webサービスをスケールさせる技術は非常に高度かつデリケートな問題なので、本書ではここまでの改善で止めておきます。
+
+リスト 14.47をもって、ステータスフィードの実装は完了です。
+13.3.3でHomeページには既にフィードを追加していたことを思い出してください。
+第13章のときはただのプロトタイプでしたが (図 13.14)、リスト 14.47の実装によって、Homeページで完全なフィードを表示できていることがわかります (図 14.23)。
+
+
+#.....................
+images/figures/home_page_with_feed_3rd_edition
+  ==> home_page_with_feed_3rd_edition.png
+図 14.23: Homeページで動作するステータスフィード
+#.....................
+
+この時点で、masterブランチに変更を取り込む準備ができました。
+
+$ rails test
+$ git add -A
+$ git commit -m "Add user following"
+$ git checkout master
+$ git merge following-users
+コードをリポジトリにpushして、本番環境にデプロイしてみましょう。
+
+$ git push
+$ git push heroku
+$ heroku pg:reset DATABASE
+$ heroku run rails db:migrate
+$ heroku run rails db:seed
+本番環境で動作するステータスフィードは次のようになります (図 14.24)。
+
+
+#.....................
+images/figures/live_status_feed
+  ==> live_status_feed.png
+図 14.24: 本番環境で動作するステータスフィード
+#.....................
+
+演習
+Homeページで表示される1ページ目のフィードに対して、統合テストを書いてみましょう。
+リスト 14.49はそのテンプレートです。
+リスト 14.49のコードでは、期待されるHTMLをCGI.escapeHTMLメソッドでエスケープしています (このメソッドは11.2.3で扱ったCGI.escapeと同じ用途です)。
+このコードでは、なぜHTMLをエスケープさせる必要があったのでしょうか? 考えてみてください。
+ヒント: 試しにエスケープ処理を外して、得られるHTMLの内容を注意深く調べてください。
+マイクロポストの内容が何かおかしいはずです。
+また、ターミナルの検索機能 (Cmd-FもしくはCtrl-F) を使って「sorry」を探すと原因の究明に役立つはずです。
+##..............................
+リスト 14.49: フィードのHTMLをテストする green
+#...............................
+test/integration/following_test.rb
+ require 'test_helper'
+
+class FollowingTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+    log_in_as(@user)
+  end
+  .
+  .
+  .
+  test "feed on Home page" do
+    get root_path
+    @user.feed.paginate(page: 1).each do |micropost|
+      assert_match CGI.escapeHTML(FILL_IN), FILL_IN
+    end
+  end
+end
+#..............................
+
+
+#-----------------------------
+[_ 14.4 ] 最後に
+#-----------------------------
+
+ステータスフィードが追加され、Ruby on Railsチュートリアルのサンプルアプリケーションがとうとう完成しました。
+このサンプルアプリケーションには、Railsの主要な機能 (モデル、ビュー、コントローラ、テンプレート、パーシャル、beforeフィルター、バリデーション、コールバック、has_many/belongs_to/has_many through関連付け、セキュリティ、テスティング、デプロイ) が多数含まれています。
+
+これだけでもかなりの量ですが、Web開発について学ぶべきことはまだまだたくさんあります。
+今後の学習の手始めとするために、この節では、より踏み込んだ学習方法を紹介します。
+
+
+#-----------------------------------------------------
+[__ 14.4.1 ] サンプルアプリケーションの機能を拡張する
+#-----------------------------------------------------
+
+(訳注: 本項は第2版で人気だったサンプルアプリケーションの課題集を、@yasulabが今風にアレンジしたものです。
+いくつかの要望を受け、訳注として掲載しています。
+チュートリアル完走後の学習指針の１つとなれば幸いです。)
+
+この項で提案するさまざまな拡張機能 (検索、返信、メッセージングなど) のほとんどは、Webアプリケーションでは一般的な機能です。
+これらの拡張を1つか2つでも実装してみることで、本書から巣立って自分のアプリケーションを書くときにきっと役に立つことでしょう。
+
+いざ実装し始めてみると思ったよりずっと難しく感じるかもしれませんが、それも当然です。
+新しい機能という真っ白なキャンバスを目の前にすれば、気後れしてしまうのも無理はありません。
+皆さんが拡張を始めるにあたり、ささやかながら私から2つほど一般的なアドバイスをしてみたいと思います。
+1) Railsアプリケーションに何らかの機能を実装していて困ったときは、RailsガイドやRails APIをチェックしてみてください。
+いずれも1,000ページを超える大型の公式ドキュメントなので、今自分がやろうとしていることに関連するトピックがあるかもしれません。
+2) できるだけ念入りにGoogleで検索し、自分が調べようとしているトピックに言及しているブログやチュートリアルがないかどうか、よく探すことです。
+Webアプリケーションの開発には常に困難がつきまといます。
+他人の経験と失敗から学ぶことも重要です。
+
+これから紹介する拡張機能はどれも難易度が高いので、実装方針の例についてヒントを書いておきました。
+たとえヒントがあったとしても、拡張機能の実装が本書の各演習よりもずっと難易度が高いことは変わりません。
+相当頑張ったにもかかわらず挫折することも当然あると思いますので、どうかそんなときには落ち込まないでください。
+時間にも限りがありますので個別にお手伝いをすることはできそうにありませんが、これらの拡張のいくつかについてなら、今後単発の記事やスクリーンキャストを公開することがあると思います。
+よければ@RailsTutorialJPから最新情報をチェックしてみてください。
+
+返信機能
+Twitterには、マイクロポスト入力中に@記号に続けてユーザーのログイン名を入力するとそのユーザーに返信できる機能があります。
+このポストは、宛先のユーザーのフィードと、自分をフォローしているユーザーにのみ表示されます。
+この返信機能の簡単なバージョンを実装してみましょう。
+具体的には、@replyは受信者のフィードと送信者のフィードにのみ表示されるようにします。
+これを実装するには、micropostsテーブルのin_reply_toカラムと、追加のincluding_repliesスコープをMicropostモデルに追加する必要があると思います (訳注: スコープの詳細は、RailsガイドのActive Record クエリインターフェイスを参照してください)。
+
+このサンプルアプリケーションではユーザー名が重なり得るので、ユーザー名を一意に表す方法も考えなければならないでしょう。
+1つの方法は、idと名前を組み合わせて@1-michael-hartlのようにすることです。
+もう1つの方法は、ユーザー登録の項目に一意のユーザー名を追加し、@replyで使えるようにすることです。
+
+メッセージ機能
+Twitterでは、ダイレクトメッセージを行える機能がサポートされています。
+この機能をサンプルアプリケーションに実装してみましょう (ヒント: Messageモデルと、新規マイクロポストにマッチする正規表現が必要になるでしょう)。
+
+フォロワーの通知
+ユーザーに新しくフォロワーが増えたときにメールで通知する機能を実装してみましょう。
+続いて、メールでの通知機能をオプションとして選択可能にし、不要な場合は通知をオフにできるようにしてみましょう。
+メール周りで分からないことがあったら、RailsガイドのAction Mailerの基礎にヒントがないか調べてみましょう。
+
+RSSフィード
+ユーザーごとのマイクロポストをRSSフィードする機能を実装してください。
+次にステータスフィードをRSSフィードする機能も実装し、余裕があればフィードに認証スキームも追加してアクセスを制限してみてください。
+
+REST API
+多くのWebサイトはAPI (Application Programmer Interface) を公開しており、第三者のアプリケーションからリソースのget/post/put/deleteが行えるようになっています。
+サンプルアプリケーションにもこのようなREST APIを実装してください。
+解決のヒントは、respond_toブロックをコントローラーの多くのアクションに追加することです。
+このブロックはXMLをリクエストされたときに応答します。
+セキュリティには十分注意してください。
+認可されたユーザーにのみAPIアクセスを許可する必要があります。
+
+検索機能
+現在のサンプルアプリケーションには、ユーザーの一覧ページを端から探す、もしくは他のユーザーのフィードを表示する以外に他のユーザーを検索する手段がありません。
+この点を強化するために、検索機能を実装してください。
+続いて、マイクロポストを検索する機能も追加してください。
+あらかじめRailsCast「Simple Search Form (英語)」を参照しておくとよいでしょう。
+Herokuでデプロイしている場合は、Herokuの「Full Text Search Options on Heroku全文検索機能マニュアル」 (英語) に従う必要があります。
+日本語の検索については、@budougumi0617 さんの簡単な検索フォームの実装例がヒントになると思います。
+
+(訳注: 他にも「いいね機能」「シェア機能」「minitestの代わりにRSpecで書き直す」「erbの代わりにHamlで書き直す」「エラーメッセージをI18nで日本語化する」「オートコンプリート機能」といったアイデアがありそうです。
+「こんな拡張を実装してみた」といった例がありましたら @yasulab までご連絡ください。)
+
+
+#-----------------------------------------------------
+[__ 14.4.2 ] 読み物ガイド
+#-----------------------------------------------------
+
+読むに値するRails関連の書籍やドキュメントは、書店やWebでいくらでも見つけられます。
+正直、あまりの多さに閉口するほどです。
+本書を完走した読者の皆さんにおいては、そのほとんどを読み進めることができるでしょう。
+本書をもう１周する場合も含め、より深い学びを得る方法についていくつかご紹介します (訳注: 英語の教材および海外のプログラミングスクールについては原著のGuide to further resourcesをご参照ください。
+本書では日本語に対応しているコンテンツやサービスを紹介します)。
+
+Everyday Rails - RSpecによるRailsテスト入門: (なんと!) Railsチュートリアルの完走者を対象としたテストの入門書籍です。
+Railsチュートリアルでは学習コストを小さく抑えるために標準のminitestを使いましたが、プロのRailsエンジニアはRSpecでテストを書くことも多いです。
+信頼性の高い実践的なテストコードを書いてみたい方にオススメです。
+プロを目指す人のためのRuby入門 - 言語仕様からテスト駆動開発・デバッグ技法まで: Rubyにおけるリファクタリングの要点やテスト駆動開発、デバッグのやり方など、開発現場で必要になる知識を解説しています。
+Railsチュートリアルでは必要最低限のRubyの知識を学びましたが、さらに１歩進んで、プロとして通用するRubyのコードを書きたい方にオススメです。
+Kindle版と書籍版の2つがあります。
+POTEPAN CAMP: Railsチュートリアルの完走者を対象とした渋谷のプログラミングスクールです。
+3ヶ月10万円で受講が可能で、同スクール経由で転職が決まれば全額キャッシュバックにも対応しています。
+Railsチュートリアルの次の１歩を目指す方にオススメです。
+Railsチュートリアル解説動画: Railsチュートリアルの公式解説動画です。
+実演付きの解説動画 (計36時間) を視聴しながら学ぶことができます。
+質問対応プランも用意されており、Railsチュートリアルをじっくりと復習したい読者や法人にオススメです。
+オンラインで学ぶスタイルと、スクールに通って学ぶスタイルの２つがあります。
+質問対応付き解説動画: 現役Rubyエンジニアのサポート付きで学べる、上記解説動画の質問対応サービスです。
+Railsチュートリアルでは章を進めるにつれて徐々に難しくなっていますが、オンラインの動画と質問を駆使しながら効率的に復習することができます。
+「途中から十分に理解できなかった」と感じた方にオススメです。
+Progate: 対話的に学べるオンラインのプログラミング学習コースです。
+初心者向けのコンテンツが特に充実しており、HTMLやCSS、JavaScript、Ruby、GitなどのWebの基本知識を学ぶには打って付けです。
+「Webの基礎的な知識を学んだ方が良さそう」と感じた場合にオススメです。
+Learn Enough Society: Ruby on Rails Tutorial の Screencast (英語版) だけでなく、その他のLearn Enoughシリーズのテキストや動画も利用できる購読型のサービスです (現在は英語のみ、日本語対応予定)。
+RailsApps: 教育目的に用意された、Railsアプリケーションのサンプル集です。
+Railsガイド: トピック毎に体系化された、1,600ページを超えるRailsの公式ガイドです。
+現役のRailsエンジニアが参照する中〜上級者向けドキュメントで、英語版を「Rails Guides」、日本語版を「Railsガイド」と呼びます。
+
+#-----------------------------------------------------
+[__ 14.4.3 ] 本章のまとめ
+#-----------------------------------------------------
+
+has_many :throughを使うと、複雑なデータ関係をモデリングできる
+has_manyメソッドには、クラス名や外部キーなど、いくつものオプションを渡すことができる
+適切なクラス名と外部キーと一緒にhas_many/has_many :throughを使うことで、能動的関係 (フォローする) や受動的関係 (フォローされる) がモデリングできた
+ルーティングは、ネストさせて使うことができる
+whereメソッドを使うと、柔軟で強力なデータベースへの問い合わせが作成できる
+Railsは (必要に応じて) 低級なSQLクエリを呼び出すことができる
+本書で学んだすべてを駆使することで、フォローしているユーザーのマイクロポスト一覧をステータスフィードに表示させることができた
+
+#-----------------------------------------------------
+[__ 14.4.4 ] 訳者あとがき
+#-----------------------------------------------------
+
+Railsチュートリアルをお読みいただきありがとうございました! 本書の翻訳および運営をしているYassLab株式会社の安川です。
+長い長いRailsチュートリアルを読み切った感想はいかがでしょうか?
+
+簡単だったと感じる方も、分からないところは飛ばし飛ばし読んでみたという方もいらっしゃるかと思います。
+僕が聞くところによると、まずは１周してみて、２周目や３周目でコードをじっくり読み返してみたり、演習にチャレンジしてみたりといった方が多いようですね。
+また、本書の内容が十分に理解できた後でも、リファレンスとして本書をご活用して頂いているという声も伺っています。
+
+そこで2017年度からは、Railsチュートリアルの電子書籍版を発売することに致しました! 電子書籍ではEPUB版、PDF版、Dash版の３つに対応していて、すべての章がまとめて読める構成になっています。
+このため、全章をまとめて検索することが可能になり、２周目や３周目で要所要所を読み返してみたり、リファレンスとして適宜参照したいときに便利なフォーマットになっています。
+
+本書で得られた売り上げは、Railsチュートリアルを継続的に更新・運営するために活用させていただきます。
+よければぜひご検討ください :)
+
+安川 要平 (YassLab株式会社 代表取締役、Railsチュートリアル共同発起人)
+
+
+NOTE: 1 
+子供の画像の引用元: http://www.flickr.com/photos/john_lustig/2518452221/ (2013-12-16)、Copyright © 2008 by John Lustig (改変不可の Creative Commons Attribution 2.0 Generic ライセンス)。
+トラ画像の引用元: https://www.flickr.com/photos/renemensen/9187111340 (2014-08-15)、 Copyright © 2013 by Rene Mesen (改変不可の Creative Commons Attribution 2.0 Generic ライセンス) ↑
+
+NOTE: 2 
+見えやすくするため、図 14.6からfollowingテーブルのidカラムを省略しました。
+ ↑
+
+NOTE: 3 
+読者のPaul Fioravantiがこの用語を提案してくれました。
+ありがとうございます。
+ ↑
+
+NOTE: 4 
+技術的には、Railsはhas_manyに渡された引数をclassifyメソッドを使ってクラス名に変換しています。
+例えば、このメソッドに"foo_bars"を渡すと"FooBar"に変換されます。
+ ↑
+
+NOTE: 5 
+技術的には、Railsはunderscoreメソッドを使ってクラス名をidに変換しています。
+例えば、"FooBar".underscoreを実行すると"foo_bar"に変換されます。
+したがって、 FooBarオブジェクトの外部キーはfoo_bar_idになるでしょう ↑
+
+NOTE: 6 
+特定の分野でモデリングの経験を多く積めば、このようなユーティリティメソッドが必要になることを事前に思い付けるようになるでしょう。
+たとえ思い付けないことがあったとしても、明確なテストを書こうとするときに、いつの間にかこういうメソッドを自分が作成していることに気付くことでしょう。
+だからというわけではありませんが、今はこのようなメソッドが必要であるということに気付けなくても問題ありません。
+ソフトウェアの開発は、繰りかえしに次ぐ繰り返しです。
+読みづらくなるまでコードを書き足し、そのコードをリファクタリングする、その繰り返しです。
+そして、より簡潔なコードを書くために、本書が少しでもお役に立てばと思います。
+ ↑
+
+NOTE: 7 
+Railsにはさまざまなルーティングオプションがありますが、詳細についてはRailsガイドの「Rails ルーティング」を参照してください。
+ ↑
+
+NOTE: 8 
+Asynchronous (非同期の) JavaScript And XMLの それぞれの頭文字をとっています。
+Ajaxはしばしば “AJAX” と大文字で書かれますが、Ajaxの起源となる記事では一貫して「Ajax」となっています。
+ ↑
+
+NOTE: 9 
+列挙可能 (enumerable) オブジェクトであることの主な条件は、eachメソッドを実装していることです。
+このメソッドはコレクションを列挙します。
+ ↑

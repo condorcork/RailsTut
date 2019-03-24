@@ -1,0 +1,1625 @@
+第9章  発展的なログイン機構
+第8章では、基本的なログイン機構を実装しました。
+しかし最近のウェブサービスでは、(任意で) ユーザーのログイン情報を記憶しておき、ブラウザを再起動した後でもすぐにログインできる機能 (remember me) を備えていることも一般的になってきました。
+そこで本章では、永続クッキー (permanent cookies) を使ってこの機能を実現していきます。
+具体的には、まずユーザーのログイン情報を長く記憶する方法 (例えばBitbucketやGitHubが使っている方法) について学びます。
+その後、[remember me] チェックボックスを使って、ユーザーの任意でログイン情報を記憶する方法について学びます (例えばTwitterやFacebookも使っていますね)。
+
+なお、サンプルアプリケーションの基本的なログイン機構は第8章で実装できているので、実は本章をスキップして第10章に進んでしまうことも可能です (同様にして、アカウントの有効化とパスワードの再設定も実はスキップして第13章に進むことも可能です)。
+とはいえ、[remember me] 機能の実装方法を学ぶことは今後の開発で大いに役立ちますし、実際、続くアカウントの有効化 (第11章) やパスワードの再設定 (第12章) などの高度な機能を実装する上でも本章は欠かせません。
+また、ウェブ上の至るところで [remember me] を備えたログインフォームがありますが、本章はその中身 (Computer Magic) を知る絶好のチャンスとも言えるでしょう。
+
+
+#-----------------------------
+[_ 9.1 ] Remember me 機能
+#-----------------------------
+
+本節では、ユーザーのログイン状態をブラウザを閉じた後でも有効にする [remember me] 機能を実装していきます。
+この機能を使うと、ユーザーが明示的にログアウトを実行しない限り、ログイン状態を維持することができるようになります。
+また本節の後半では、この機能を使うかどうかをユーザーに決めてもらうため、[remember me] のチェックボックスをログインフォームに追加していくことにします (9.2)。
+
+それではいつものように、まずはトピックブランチを作成し、そこで作業を進めていきましょう。
+
+$ git checkout -b advanced-login
+
+#-----------------------------------------------------
+[__ 9.1.1 ] 記憶トークンと暗号化
+#-----------------------------------------------------
+
+8.2では、Railsのsessionメソッドを使ってユーザーIDを保存しましたが、この情報はブラウザを閉じると消えてしまいます。
+本節では、セッションの永続化の第一歩として記憶トークン (remember token) を生成し、cookiesメソッドによる永続的cookiesの作成や、安全性の高い記憶ダイジェスト (remember digest) によるトークン認証にこの記憶トークンを活用します。
+(訳注: 「トークン」とは、パスワードの平文と同じような秘匿されるべき情報を指します。
+パスワードとトークンとの一般的な違いは、パスワードは使用者が自身で作成・管理する情報であるのに対し、トークンはコンピューターなどが生成した情報である点です。
+)
+
+8.2.1で解説したように、sessionメソッドで保存した情報は自動的に安全が保たれますが、cookiesメソッドに保存する情報は残念ながらそのようにはなっていません。
+特に、cookiesを永続化するとセッションハイジャックという攻撃を受ける可能性があります。
+この攻撃は、記憶トークンを奪って、特定のユーザーになりすましてログインするというものです。
+cookiesを盗み出す有名な方法は4通りあります。
+ (1) 管理の甘いネットワークを通過するネットワークパケットからパケットスニッファという特殊なソフトウェアで直接cookieを取り出す1。
+ (2) データベースから記憶トークンを取り出す。
+ (3) クロスサイトスクリプティング (XSS) を使う。
+ (4) ユーザーがログインしているパソコンやスマホを直接操作してアクセスを奪い取る。
+
+7.5では、最初の問題を防止するためにSecure Sockets Layer (SSL) をサイト全体に適用して、ネットワークデータを暗号化で保護し、パケットスニッファから読み取られないようにしています。
+2番目の問題の対策としては、記憶トークンをそのままデータベースに保存するのではなく、記憶トークンのハッシュ値を保存するようにします。
+これは、6.3で生のパスワードをデータベースに保存する代わりに、パスワードのダイジェストを保存したのと同じ考え方に基づいています2。
+3番目の問題については、Railsによって自動的に対策が行われます。
+具体的には、ビューのテンプレートで入力した内容をすべて自動的にエスケープします。
+4番目のログイン中のコンピュータへの物理アクセスによる攻撃については、さすがにシステム側での根本的な防衛手段を講じることは不可能なのですが、二次被害を最小限に留めることは可能です。
+具体的には、ユーザーが (別端末などで) ログアウトしたときにトークンを必ず変更するようにし、セキュリティ上重要になる可能性のある情報を表示するときはデジタル署名 (digital signature) を行うようにします。
+
+上で説明した設計やセキュリティ上の考慮事項を元に、次の方針で永続的セッションを作成することにします。
+
+記憶トークンにはランダムな文字列を生成して用いる。
+ブラウザのcookiesにトークンを保存するときには、有効期限を設定する。
+トークンはハッシュ値に変換してからデータベースに保存する。
+ブラウザのcookiesに保存するユーザーIDは暗号化しておく。
+永続ユーザーIDを含むcookiesを受け取ったら、そのIDでデータベースを検索し、記憶トークンのcookiesがデータベース内のハッシュ値と一致することを確認する。
+上の最後の手順が、ユーザーログインのときの手順と似ていることにご注目ください。
+ユーザーログインでは、メールアドレスをキーにしてユーザーを取り出し、送信されたパスワードがパスワードダイジェストと一致することを (authenticateメソッドで) 確認します (リスト 8.7)。
+つまり、ここでの実装はhas_secure_passwordと似た側面を持ちます。
+
+それでは最初に、必要となるremember_digest属性をUserモデルに追加します (図 9.1)。
+
+user_model_remember_digest
+図 9.1: remember_digest属性を追加したUserモデル
+#.....................
+
+図 9.1のデータモデルをアプリケーションに追加するために、次のマイグレーションを生成します。
+
+$ rails generate migration add_remember_digest_to_users remember_digest:string
+(6.3.1のパスワードダイジェストのときのマイグレーションと比較してみましょう。
+) 前回のマイグレーションと同様、今回のマイグレーション名も_to_usersで終わっています。
+これは、マイグレーションの対象がデータベースのusersテーブルであることをRailsに指示するためのものです。
+今回は種類=stringのremember_digest属性を追加しているので、いつものようにRailsによってデフォルトのマイグレーションが作成されます (リスト 9.1)。
+
+##..............................
+リスト 9.1: 記憶ダイジェスト用に生成したマイグレーション
+#...............................
+db/migrate/[timestamp]_add_remember_digest_to_users.rb
+ class AddRememberDigestToUsers < ActiveRecord::Migration[5.0]
+  def change
+    add_column :users, :remember_digest, :string
+  end
+end
+#..............................
+
+記憶ダイジェストはユーザーが直接読み出すことはないので (かつ、そうさせてはならないので)、remember_digestカラムにインデックスを追加する必要はありません。
+したがって、上のマイグレーションは変更せずにそのまま使います。
+
+$ rails db:migrate
+ここで、記憶トークンとして何を使うかを決める必要があります。
+有力な候補として様々なものが考えられますが、基本的には長くてランダムな文字列であればどんなものでも構いません。
+例えば、Ruby標準ライブラリのSecureRandomモジュールにあるurlsafe_base64メソッドなら、この用途にぴったり合いそうです3。
+このメソッドは、A–Z、a–z、0–9、"-"、"_"のいずれかの文字 (64種類) からなる長さ22のランダムな文字列を返します (64種類なのでbase64と呼ばれています)。
+典型的なbase64の文字列は、次のようなものです。
+
+$ rails console
+>> SecureRandom.urlsafe_base64
+=> "q5lt38hQDc_959PVoo6b7A"
+2人のユーザーのパスワードが完全に同じであれば4、記憶トークンが一意である必然性はなくなりますが、現実にはそんなことはないので、記憶トークンによってセキュリティが高められます5。
+また、先ほどのbase64の文字列では、64種類の文字からなる長さ22の文字列なので、2つの記憶トークンがたまたま完全に一致する (=衝突する) 確率は「
+1
+/
+64
+22
+=
+2
+−
+132
+≈
+10
+−
+40
+」となるので、トークンが衝突することはまずありません6。
+さらにありがたいことに、base64はURLを安全にエスケープするためにも用いられる (urlsafe_base64という名前のメソッドがあることからもわかります) ので、base64を採用すれば、第10章でアカウントの有効化のリンクやパスワードリセットのリンクでも同じトークンジェネレータを使えるようになります。
+
+ユーザーを記憶するには、記憶トークンを作成して、そのトークンをダイジェストに変換したものをデータベースに保存します。
+fixtureをテストするときにdigestメソッドを既に作成してあったので (リスト 8.21)、上の結論に従って、新しいトークンを作成するためのnew_tokenメソッドを作成できます。
+この新しいdigestメソッドではユーザーオブジェクトが不要なので、このメソッドもUserモデルのクラスメソッドとして作成することにします7。
+以上を反映したUserモデルをリスト 9.2に示します。
+
+##..............................
+リスト 9.2: トークン生成用メソッドを追加する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  before_save { self.email = email.downcase }
+  validates :name,  presence: true, length: { maximum: 50 }
+  VALID_EMAIL_REGEX = /\A[\w+\-.]+@[a-z\d\-.]+\.[a-z]+\z/i
+  validates :email, presence: true, length: { maximum: 255 },
+                    format: { with: VALID_EMAIL_REGEX },
+                    uniqueness: { case_sensitive: false }
+  has_secure_password
+  validates :password, presence: true, length: { minimum: 6 }
+
+  # 渡された文字列のハッシュ値を返す
+  def User.digest(string)
+    cost = ActiveModel::SecurePassword.min_cost ? BCrypt::Engine::MIN_COST :
+                                                  BCrypt::Engine.cost
+    BCrypt::Password.create(string, cost: cost)
+  end
+
+  # ランダムなトークンを返す
+  def User.new_token
+    SecureRandom.urlsafe_base64
+  end
+end
+#..............................
+
+さしあたっての実装計画としては、user.rememberメソッドを作成することにします。
+このメソッドは、記憶トークンをユーザーと関連付け、トークンに対応する記憶ダイジェストをデータベースに保存します。
+リスト 9.1のマイグレーションを行ってあるので、Userモデルには既にremember_digest属性が追加されていますが、remember_token属性はまだ追加されていません。
+そこで、user.remember_tokenメソッド (cookiesの保存場所です) を使ってトークンにアクセスできるようにする必要があります。
+しかも、トークンをデータベースに保存せずに実装する必要があります。
+そのためには、6.3の安全なパスワードの問題のときと同様の手法でこれを解決します。
+あのときは、「仮想の」password属性と、データベース上のセキュアなpassword_digest属性を使いました。
+仮想のpassword属性はhas_secure_passwordメソッドで自動的に作成できましたが、今回はremember_tokenのコードを自分で書く必要があります。
+これを実装するため、4.4.5で行ったように、attr_accessorを使ってアクセス可能な属性を作成します。
+
+class User < ApplicationRecord
+  attr_accessor :remember_token
+  .
+  .
+  .
+  def remember
+    self.remember_token = ...
+    update_attribute(:remember_digest, ...)
+  end
+end
+rememberメソッドの1行目の代入にご注目ください。
+selfというキーワードを使わないと、Rubyによってremember_tokenという名前のローカル変数が作成されてしまいます。
+この動作は、Rubyにおけるオブジェクト内部への要素代入の仕様によるものです。
+今欲しいのはローカル変数ではありません。
+selfキーワードを与えると、この代入によってユーザーのremember_token属性が期待どおりに設定されます (リスト 6.32の他のbefore_saveコールバックで、emailではなくself.emailと記述していた理由が、これでおわかりいただけたと思います)。
+rememberメソッドの２行目では、update_attributeメソッドを使って記憶ダイジェストを更新しています。
+6.1.5で説明したように、このメソッドはバリデーションを素通りさせます。
+今回はユーザーのパスワードやパスワード確認にアクセスできないので、バリデーションを素通りさせなければなりません。
+
+以上の点を考慮して、有効なトークンとそれに関連するダイジェストを作成できるようにします。
+具体的には、最初にUser.new_tokenで記憶トークンを作成し、続いてUser.digestを適用した結果で記憶ダイジェストを更新します。
+rememberメソッドの更新結果をリスト 9.3に示します。
+
+##..............................
+リスト 9.3: rememberメソッドをUserモデルに追加する green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token
+  before_save { self.email = email.downcase }
+  validates :name,  presence: true, length: { maximum: 50 }
+  VALID_EMAIL_REGEX = /\A[\w+\-.]+@[a-z\d\-.]+\.[a-z]+\z/i
+  validates :email, presence: true, length: { maximum: 255 },
+                    format: { with: VALID_EMAIL_REGEX },
+                    uniqueness: { case_sensitive: false }
+  has_secure_password
+  validates :password, presence: true, length: { minimum: 6 }
+
+  # 渡された文字列のハッシュ値を返す
+  def User.digest(string)
+    cost = ActiveModel::SecurePassword.min_cost ? BCrypt::Engine::MIN_COST :
+                                                  BCrypt::Engine.cost
+    BCrypt::Password.create(string, cost: cost)
+  end
+
+  # ランダムなトークンを返す
+  def User.new_token
+    SecureRandom.urlsafe_base64
+  end
+
+  # 永続セッションのためにユーザーをデータベースに記憶する
+  def remember
+    self.remember_token = User.new_token
+    update_attribute(:remember_digest, User.digest(remember_token))
+  end
+end
+#..............................
+
+演習
+コンソールを開き、データベースにある最初のユーザーを変数userに代入してください。
+その後、そのuserオブジェクトからrememberメソッドがうまく動くかどうか確認してみましょう。
+また、remember_tokenとremember_digestの違いも確認してみてください。
+リスト 9.3では、明示的にUserクラスを呼び出すことで、新しいトークンやダイジェスト用のクラスメソッドを定義しました。
+実際、User.new_tokenやUser.digestを使って呼び出せるようになったので、おそらく最も明確なクラスメソッドの定義方法であると言えるでしょう。
+しかし実は、より「Ruby的に正しい」クラスメソッドの定義方法が２通りあります。
+1つはややわかりにくく、もう1つは非常に混乱するでしょう。
+テストスイートを実行して、リスト 9.4 (ややわかりにくい) や、リスト 9.5 (非常に混乱する) の実装でも、正しく動くことを確認してみてください。
+ヒント: selfは、通常の文脈ではUser「モデル」、つまりユーザーオブジェクトのインスタンスを指しますが、リスト 9.4やリスト 9.5の文脈では、selfはUser「クラス」を指すことにご注意ください。
+わかりにくさの原因の一部はこの点にあります。
+##..............................
+リスト 9.4: selfを使ってdigestとnew_tokenメソッドを定義するgreen
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # 渡された文字列のハッシュ値を返す
+  def self.digest(string)
+    cost = ActiveModel::SecurePassword.min_cost ? BCrypt::Engine::MIN_COST :
+                                                  BCrypt::Engine.cost
+    BCrypt::Password.create(string, cost: cost)
+  end
+   
+  # ランダムなトークンを返す
+  def self.new_token
+    SecureRandom.urlsafe_base64
+  end
+  .
+  .
+  .
+end
+#..............................
+
+##..............................
+リスト 9.5: class << selfを使ってdigestとnew_tokenメソッドを定義する green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  class << self
+    # 渡された文字列のハッシュ値を返す
+    def digest(string)
+      cost = ActiveModel::SecurePassword.min_cost ? BCrypt::Engine::MIN_COST :
+                                                    BCrypt::Engine.cost
+      BCrypt::Password.create(string, cost: cost)
+    end
+      
+    # ランダムなトークンを返す
+    def new_token
+      SecureRandom.urlsafe_base64
+    end
+  end
+  .
+  .
+  .
+#..............................
+
+
+#-----------------------------------------------------
+[__ 9.1.2 ] ログイン状態の保持
+#-----------------------------------------------------
+
+user.rememberメソッドが動作するようになったので、ユーザーの暗号化済みIDと記憶トークンをブラウザの永続cookiesに保存して、永続セッションを作成する準備ができました。
+これを実際に行うにはcookiesメソッドを使います。
+このメソッドは、sessionのときと同様にハッシュとして扱えます。
+個別のcookiesは、１つのvalue (値) と、オプションのexpires (有効期限) からできています。
+有効期限は省略可能です。
+例えば次のように、20年後に期限切れになる記憶トークンと同じ値をcookieに保存することで、永続的なセッションを作ることができます。
+
+cookies[:remember_token] = { value:   remember_token,
+                             expires: 20.years.from_now.utc }
+(上のコードではRailsの便利なtimeヘルパーを使っています。
+詳細はコラム 9.1を参照してください。
+) 上のように20年で期限切れになるcookies設定はよく使われるようになり、今ではRailsにも特殊なpermanentという専用のメソッドが追加されたほどです。
+このメソッドを使うと、コードは次のようにシンプルになります。
+
+cookies.permanent[:remember_token] = remember_token
+上のコードによって、Railsは期限を20.years.from_nowに設定します。
+
+#.....................................
+コラム 9.1. cookiesは今から20年後に切れる (20.years.from_now)
+#.....................................
+Rubyは組み込みクラスを含むあらゆるクラスにメソッドを追加できることを4.4.2で学びました。
+あのときは、palindrome?メソッドをStringクラスに追加しました (ついでに"deified"も回文になっていることを発見しました)。
+また、Railsが実はblank?メソッドをObjectクラスに追加していることも判明しました (これにより、"".blank?、" ".blank?、nil.blank?はいずれもtrueになります)。
+このcookies.permanentメソッドでは、cookiesが20年後に期限切れになる (20.years.from_now) ように指定していますが、これはRailsのtimeヘルパーを使った格好の例題になります。
+timeヘルパーはRailsによって、数値関連の基底クラスであるFixnumクラスに追加されます。
+
+  $ rails console
+  >> 1.year.from_now
+  => Wed, 21 Jun 2017 19:36:29 UTC +00:00
+  >> 10.weeks.ago
+  => Tue, 12 Apr 2016 19:36:44 UTC +00:00
+Railsは次のようなヘルパーも追加しています。
+
+  >> 1.kilobyte
+  => 1024
+  >> 5.megabytes
+  => 5242880
+上のヘルパーは、ファイルのアップロードに5.megabytesなどの制限を与えるのに便利です。
+
+メソッドを組み込みクラスに追加できる柔軟性の高さのおかげで、純粋なRubyを極めて自然に拡張することができます (もちろん注意して使う必要はありますが)。
+実際、Railsのエレガントな仕様の多くは、背後にあるRubyの高い拡張性によって実現されているのです。
+
+ユーザーIDをcookiesに保存するには、sessionメソッドで使ったのと同じパターン (リスト 8.14) を使います。
+具体的には次のようになります。
+
+cookies[:user_id] = user.id
+しかしこのままではIDが生のテキストとしてcookiesに保存されてしまうので、アプリケーションのcookiesの形式が見え見えになってしまい、攻撃者がユーザーアカウントを奪い取ることを助けてしまう可能性があります。
+これを避けるために、署名付きcookieを使います。
+これは、cookieをブラウザに保存する前に安全に暗号化するためのものです8。
+
+cookies.signed[:user_id] = user.id
+ユーザーIDと記憶トークンはペアで扱う必要があるので、cookieも永続化しなくてはなりません。
+そこで、次のようにsignedとpermanentをメソッドチェーンで繋いで使います。
+
+cookies.permanent.signed[:user_id] = user.id
+cookiesを設定すると、以後のページのビューでこのようにcookiesからユーザーを取り出せるようになります。
+
+User.find_by(id: cookies.signed[:user_id])
+cookies.signed[:user_id]では自動的にユーザーIDのcookiesの暗号が解除され、元に戻ります。
+続いて、bcryptを使ってcookies[:remember_token]がremember_digestと一致することを確認します (リスト 9.3)。
+ところで、署名されたユーザーIDがあれば記憶トークンは不要なのではないかと疑問に思う方もいるかもしれません。
+しかし記憶トークンがなければ、暗号化されたIDを奪った攻撃者は、暗号化IDをそのまま使ってお構いなしにログインしてしまうでしょう。
+現在の設計では、攻撃者が仮に両方のcookiesを奪い取ることに成功したとしても、本物のユーザーがログアウトするとログインできないようになっています。
+
+パズルもいよいよ最後のピースを残すだけとなりました。
+渡されたトークンがユーザーの記憶ダイジェストと一致することを確認します。
+この一致をbcryptで確認するための様々な方法があります。
+secure_passwordのソースコードを調べてみると、次のような比較を行っている箇所があります9。
+
+BCrypt::Password.new(password_digest) == unencrypted_password
+今回の場合、上のコードを参考に下のようなコードを使います。
+
+BCrypt::Password.new(remember_digest) == remember_token
+このコードをじっくり調べてみると、実に奇妙なつくりになっています。
+bcryptで暗号化されたパスワードを、トークンと直接比較しています。
+ということは、==で比較する際にダイジェストを復号化しているのでしょうか。
+しかし、bcryptのハッシュは復号化できないはずなので、復号化しているはずはありません。
+そこでbcrypt gemのソースコードを詳しく調べてみると、なんと、比較に使っている==演算子が再定義されています。
+実際の比較をコードで表すと、次のようになっています。
+
+BCrypt::Password.new(remember_digest).is_password?(remember_token)
+実際の比較では、==の代わりにis_password?という論理値メソッドが使われています。
+これで少し見えてきました。
+今から書くアプリケーションコードでもこれと同じ方法を使うことにしましょう。
+
+以上の説明を元に、記憶トークンと記憶ダイジェストを比較するauthenticated?メソッドを、Userモデルの中に置けばよいのではないかと推測できます。
+このメソッドは、has_secure_passwordで提供されるユーザー認証用のauthenticateメソッドと似ています (リスト 8.15)。
+この実装結果をリスト 9.6に示します。
+ところで、このauthenticated?メソッド (リスト 9.6) は記憶ダイジェストと強く結びついていますが、実は他の様々な用途にも応用できます。
+第10章ではこのメソッドを一般化してみます。
+
+##..............................
+リスト 9.6: authenticated?をUserモデルに追加する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token
+  before_save { self.email = email.downcase }
+  validates :name,  presence: true, length: { maximum: 50 }
+  VALID_EMAIL_REGEX = /\A[\w+\-.]+@[a-z\d\-.]+\.[a-z]+\z/i
+  validates :email, presence: true, length: { maximum: 255 },
+                    format: { with: VALID_EMAIL_REGEX },
+                    uniqueness: { case_sensitive: false }
+  has_secure_password
+  validates :password, presence: true, length: { minimum: 6 }
+
+  # 渡された文字列のハッシュ値を返す
+  def User.digest(string)
+    cost = ActiveModel::SecurePassword.min_cost ? BCrypt::Engine::MIN_COST :
+                                                  BCrypt::Engine.cost
+    BCrypt::Password.create(string, cost: cost)
+  end
+
+  # ランダムなトークンを返す
+  def User.new_token
+    SecureRandom.urlsafe_base64
+  end
+
+  # 永続セッションのためにユーザーをデータベースに記憶する
+  def remember
+    self.remember_token = User.new_token
+    update_attribute(:remember_digest, User.digest(remember_token))
+  end
+
+  # 渡されたトークンがダイジェストと一致したらtrueを返す
+  def authenticated?(remember_token)
+    BCrypt::Password.new(remember_digest).is_password?(remember_token)
+  end
+end
+#..............................
+
+authenticated?メソッドのローカル変数として定義したremember_tokenは、リスト 9.3のattr_accessor :remember_tokenで定義したアクセサとは異なる点に注意してください (リスト 9.6)。
+今回の場合、is_password?の引数はメソッド内のローカル変数を参照しています。
+もう１つ、remember_digestの属性の使い方にもご注目ください。
+この使い方はself.remember_digestと同じであり、すなわち第6章のnameやemailの使い方と同じになります。
+実際、remember_digestの属性はデータベースのカラムに対応しているため、Active Recordによって簡単に取得したり保存したりできます (リスト 9.1)。
+
+これで、ログインしたユーザーを記憶する処理の準備が整いました。
+rememberヘルパーメソッドを追加して、log_inと連携させてみましょう (リスト 9.7)。
+
+##..............................
+リスト 9.7: ログインしてユーザーを保持する
+#...............................
+app/controllers/sessions_controller.rb
+ class SessionsController < ApplicationController
+
+  def new
+  end
+
+  def create
+    user = User.find_by(email: params[:session][:email].downcase)
+    if user && user.authenticate(params[:session][:password])
+      log_in user
+      remember user
+      redirect_to user
+    else
+      flash.now[:danger] = 'Invalid email/password combination'
+      render 'new'
+    end
+  end
+
+  def destroy
+    log_out
+    redirect_to root_url
+  end
+end
+#..............................
+
+log_inのときと同様に、リスト 9.7では実際のSessionsヘルパーの動作は、rememberメソッド定義のuser.rememberを呼び出すまで遅延され、そこで記憶トークンを生成してトークンのダイジェストをデータベースに保存します。
+続いて上と同様に、cookiesメソッドでユーザーIDと記憶トークンの永続cookiesを作成します。
+作成したコードをリスト 9.8に示します。
+
+##..............................
+リスト 9.8: ユーザーを記憶する
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+
+  # 渡されたユーザーでログインする
+  def log_in(user)
+    session[:user_id] = user.id
+  end
+
+  # ユーザーのセッションを永続的にする
+  def remember(user)
+    user.remember
+    cookies.permanent.signed[:user_id] = user.id
+    cookies.permanent[:remember_token] = user.remember_token
+  end
+
+  # 現在ログインしているユーザーを返す (いる場合)
+  def current_user
+    @current_user ||= User.find_by(id: session[:user_id])
+  end
+
+  # ユーザーがログインしていればtrue、その他ならfalseを返す
+  def logged_in?
+    !current_user.nil?
+  end
+
+  # 現在のユーザーをログアウトする
+  def log_out
+    session.delete(:user_id)
+    @current_user = nil
+  end
+end
+#..............................
+
+リスト 9.8のコードでは、ログインするユーザーはブラウザで有効な記憶トークンを得られるように記憶されますが、リスト 8.16で定義したcurrent_userメソッドでは一時セッションしか扱っていないので、このままでは正常に動作しません。
+
+@current_user ||= User.find_by(id: session[:user_id])
+永続セッションの場合は、session[:user_id]が存在すれば一時セッションからユーザーを取り出し、それ以外の場合はcookies[:user_id]からユーザーを取り出して、対応する永続セッションにログインする必要があります。
+これを行うには、次のように記述します。
+
+if session[:user_id]
+  @current_user ||= User.find_by(id: session[:user_id])
+elsif cookies.signed[:user_id]
+  user = User.find_by(id: cookies.signed[:user_id])
+  if user && user.authenticated?(cookies[:remember_token])
+    log_in user
+    @current_user = user
+  end
+end
+上のコードでもuser && user.authenticated (リスト 8.7) を使っている点にご注目ください。
+このコードでも動作しますが、今のままではsessionメソッドもcookiesメソッドもそれぞれ2回ずつ使われてしまい、無駄です。
+これを解消するためには、次のようにローカル変数を使います。
+
+if (user_id = session[:user_id])
+  @current_user ||= User.find_by(id: user_id)
+elsif (user_id = cookies.signed[:user_id])
+  user = User.find_by(id: user_id)
+  if user && user.authenticated?(cookies[:remember_token])
+    log_in user
+    @current_user = user
+  end
+end
+上のコードでは次のような構造が使われていますが、少し紛らわしい点があります。
+
+if (user_id = session[:user_id])
+一見、上のコードは比較を行っているように見えますが、これは比較ではありません。
+比較であれば==を使うはずですが、ここでは代入を行っています。
+このコードを言葉で表すと、「ユーザーIDがユーザーIDのセッションと等しければ...」ではなく、「(ユーザーIDにユーザーIDのセッションを代入した結果) ユーザーIDのセッションが存在すれば」となります10。
+
+前述のようにcurrent_userヘルパーを定義すると、リスト 9.9のようになります。
+
+##..............................
+リスト 9.9: 永続的セッションのcurrent_userを更新する red
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+
+  # 渡されたユーザーでログインする
+  def log_in(user)
+    session[:user_id] = user.id
+  end
+
+  # ユーザーのセッションを永続的にする
+  def remember(user)
+    user.remember
+    cookies.permanent.signed[:user_id] = user.id
+    cookies.permanent[:remember_token] = user.remember_token
+  end
+
+  # 記憶トークンcookieに対応するユーザーを返す
+  def current_user
+    if (user_id = session[:user_id])
+      @current_user ||= User.find_by(id: user_id)
+    elsif (user_id = cookies.signed[:user_id])
+      user = User.find_by(id: user_id)
+      if user && user.authenticated?(cookies[:remember_token])
+        log_in user
+        @current_user = user
+      end
+    end
+  end
+
+  # ユーザーがログインしていればtrue、その他ならfalseを返す
+  def logged_in?
+    !current_user.nil?
+  end
+
+  # 現在のユーザーをログアウトする
+  def log_out
+    session.delete(:user_id)
+    @current_user = nil
+  end
+end
+リスト 9.9のコードでは、新しくログインしたユーザーは正しく記憶されます。
+実際にログインしてからブラウザを閉じ、アプリケーションを再起動してからもう一度ブラウザでアプリケーションを開いてみると、期待どおり動作していることを確認できます。
+11その気になれば、ブラウザのcookiesをブラウザで直接調べて結果を確認することもできます (図 9.2)。
+12
+
+#..............................
+
+
+#.....................
+images/figures/cookie_in_browser_chrome
+  ==> cookie_in_browser_chrome.png
+図 9.2: ブラウザに記憶トークンのcookiesを表示する
+#.....................
+
+アプリケーションに現在残された問題はあと1つだけです。
+ブラウザのcookiesを削除する手段が未実装なので (20年待てば消えますが)、ユーザーがログアウトできません。
+これは当然テストスイートでキャッチすべき問題であり、redにならなければなりません。
+
+##..............................
+リスト 9.10: red
+#...............................
+$ rails test
+#..............................
+
+演習
+ブラウザのcookieを調べ、ログイン後のブラウザではremember_tokenと暗号化されたuser_idがあることを確認してみましょう。
+コンソールを開き、リスト 9.6のauthenticated?メソッドがうまく動くかどうか確かめてみましょう。
+
+#-----------------------------------------------------
+[__ 9.1.3 ] ユーザーを忘れる
+#-----------------------------------------------------
+
+ユーザーがログアウトできるようにするために、ユーザーを記憶するためのメソッドと同様の方法で、ユーザーを忘れるためのメソッドを定義します。
+このuser.forgetメソッドによって、user.rememberが取り消されます。
+具体的には、記憶ダイジェストをnilで更新します (リスト 9.11)。
+
+##..............................
+リスト 9.11: forgetメソッドをUserモデルに追加する red
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token
+  before_save { self.email = email.downcase }
+  validates :name,  presence: true, length: { maximum: 50 }
+  VALID_EMAIL_REGEX = /\A[\w+\-.]+@[a-z\d\-.]+\.[a-z]+\z/i
+  validates :email, presence: true, length: { maximum: 255 },
+                    format: { with: VALID_EMAIL_REGEX },
+                    uniqueness: { case_sensitive: false }
+  has_secure_password
+  validates :password, presence: true, length: { minimum: 6 }
+
+  # 渡された文字列のハッシュ値を返す
+  def User.digest(string)
+    cost = ActiveModel::SecurePassword.min_cost ? BCrypt::Engine::MIN_COST :
+                                                  BCrypt::Engine.cost
+    BCrypt::Password.create(string, cost: cost)
+  end
+    
+  # ランダムなトークンを返す
+  def User.new_token
+    SecureRandom.urlsafe_base64
+  end
+
+  # 永続セッションのためにユーザーをデータベースに記憶する
+  def remember
+    self.remember_token = User.new_token
+    update_attribute(:remember_digest, User.digest(remember_token))
+  end
+
+  # 渡されたトークンがダイジェストと一致したらtrueを返す
+  def authenticated?(remember_token)
+    BCrypt::Password.new(remember_digest).is_password?(remember_token)
+  end
+
+  # ユーザーのログイン情報を破棄する
+  def forget
+    update_attribute(:remember_digest, nil)
+  end
+end
+#..............................
+
+リスト 9.11のコードを使うと、永続セッションを終了できるようになる準備が整います。
+終了するには、forgetヘルパーメソッドを追加してlog_outヘルパーメソッドから呼び出します (リスト 9.12)。
+リスト 9.12をよく見てみると、forgetヘルパーメソッドではuser.forgetを呼んでからuser_idとremember_tokenのcookiesを削除していることがわかります。
+
+##..............................
+リスト 9.12: 永続セッションからログアウトする green
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+
+  # 渡されたユーザーでログインする
+  def log_in(user)
+    session[:user_id] = user.id
+  end
+  .
+  .
+  .
+  # 永続的セッションを破棄する
+  def forget(user)
+    user.forget
+    cookies.delete(:user_id)
+    cookies.delete(:remember_token)
+  end
+
+  # 現在のユーザーをログアウトする
+  def log_out
+    forget(current_user)
+    session.delete(:user_id)
+    @current_user = nil
+  end
+end
+#..............................
+
+この時点で、すべてのテストスイートが greenになることを確認してみましょう。
+
+##..............................
+リスト 9.13: green
+#...............................
+$ rails test
+#..............................
+
+演習
+ログアウトした後に、ブラウザの対応するcookiesが削除されていることを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 9.1.4 ] ２つの目立たないバグ
+#-----------------------------------------------------
+
+実は小さなバグが2つ残っていて、この2つのバグは互いに強く関連しています。
+1つ目のバグは次の通りです。
+ユーザーは場合によっては、同じサイトを複数のタブ (あるいはウィンドウ) で開いていることもあります。
+ログアウト用リンクはログイン中には表示されませんが、今のcurrent_userの使い方では、ユーザーが1つのタブでログアウトし、もう1つのタブで再度ログアウトしようとするとエラーになってしまいます。
+これは、もう1つのタブで "Log out" リンクをクリックすると、current_userがnilとなってしまうため、log_outメソッド内のforget(current_user)が失敗してしまうからです (リスト 9.12)13。
+この問題を回避するためには、ユーザーがログイン中の場合にのみログアウトさせる必要があります。
+
+2番目の地味な問題は、ユーザーが複数のブラウザ (FirefoxやChromeなど) でログインしていたときに起こります。
+例えば、Firefoxでログアウトし、Chromeではログアウトせずにブラウザを終了させ、再度Chromeで同じページを開くと、この問題が発生します14。
+FirefoxとChromeを使った具体例で考えてみましょう。
+ユーザーがFirefoxからログアウトすると、user.forgetメソッドによってremember_digestがnilになります (リスト 9.11)。
+この時点では、Firefoxでまだアプリケーションが正常に動作しているはずです。
+このとき、リスト 9.12ではlog_outメソッドによってユーザーIDが削除されるため、ハイライトされている2つの条件はfalseになります。
+
+# 記憶トークンcookieに対応するユーザーを返す
+def current_user
+  if (user_id = session[:user_id])
+    @current_user ||= User.find_by(id: user_id)
+  elsif (user_id = cookies.signed[:user_id])
+    user = User.find_by(id: user_id)
+    if user && user.authenticated?(cookies[:remember_token])
+      log_in user
+      @current_user = user
+    end
+  end
+end
+結果として、current_userメソッドの最終的な評価結果は、期待どおりnilになります。
+
+一方、Chromeを閉じたとき、session[:user_id]はnilになります (これはブラウザが閉じたときに、全てのセッション変数の有効期限が切れるためです)。
+しかし、cookiesはブラウザの中に残り続けているため、Chromeを再起動してサンプルアプリケーションにアクセスすると、データベースからそのユーザーを見つけることができてしまいます。
+
+# 記憶トークンcookieに対応するユーザーを返す
+def current_user
+  if (user_id = session[:user_id])
+    @current_user ||= User.find_by(id: user_id)
+  elsif (user_id = cookies.signed[:user_id])
+    user = User.find_by(id: user_id)
+    if user && user.authenticated?(cookies[:remember_token])
+      log_in user
+      @current_user = user
+    end
+  end
+end
+結果として、次のif文の条件式が評価されます。
+
+user && user.authenticated?(cookies[:remember_token])
+このとき、userがnilであれば1番目の条件式で評価は終了するのですが、実際にはnilではないので2番目の条件式まで評価が進み、そのときにエラーが発生します。
+原因は、Firefoxでログアウトしたときに (リスト 9.11) ユーザーのremember_digestが削除してしまっているにもかかわらず、Chromeでアプリケーションにアクセスしたときに次の文を実行してしまうからです。
+
+BCrypt::Password.new(remember_digest).is_password?(remember_token)
+すなわち上のremember_digestがnilになるので、bcryptライブラリ内部で例外が発生します。
+この問題を解決するには、remember_digestが存在しないときはfalseを返す処理をauthenticated?に追加する必要があります。
+
+テスト駆動開発は、この種の地味なバグ修正にはうってつけです。
+そこで、2つのエラーをキャッチするテストから書いていくことにしましょう。
+まずはリスト 8.31の統合テストを元に、redになるテストを作成してみます (リスト 9.14)。
+
+##..............................
+リスト 9.14: ユーザーログアウトのテスト red
+#...............................
+test/integration/users_login_test.rb
+ require 'test_helper'
+
+class UsersLoginTest < ActionDispatch::IntegrationTest
+  .
+  .
+  .
+  test "login with valid information followed by logout" do
+    get login_path
+    post login_path, params: { session: { email:    @user.email,
+                                          password: 'password' } }
+    assert is_logged_in?
+    assert_redirected_to @user
+    follow_redirect!
+    assert_template 'users/show'
+    assert_select "a[href=?]", login_path, count: 0
+    assert_select "a[href=?]", logout_path
+    assert_select "a[href=?]", user_path(@user)
+    delete logout_path
+    assert_not is_logged_in?
+    assert_redirected_to root_url
+    # 2番目のウィンドウでログアウトをクリックするユーザーをシミュレートする
+    delete logout_path
+    follow_redirect!
+    assert_select "a[href=?]", login_path
+    assert_select "a[href=?]", logout_path,      count: 0
+    assert_select "a[href=?]", user_path(@user), count: 0
+  end
+end
+#..............................
+
+リスト 9.14では、current_userがないために2回目のdelete logout_pathの呼び出しでエラーが発生し、テストスイートは redになります。
+
+##..............................
+リスト 9.15: red
+#...............................
+$ rails test
+#..............................
+
+次にこのテストを成功させます。
+具体的にはリスト 9.16のコードで、logged_in?がtrueの場合に限ってlog_outを呼び出すように変更します。
+
+##..............................
+リスト 9.16: ログイン中の場合のみログアウトする green
+#...............................
+app/controllers/sessions_controller.rb
+ class SessionsController < ApplicationController
+  .
+  .
+  .
+  def destroy
+    log_out if logged_in?
+    redirect_to root_url
+  end
+end
+#..............................
+
+2番目の問題についてですが、統合テストで2種類のブラウザをシミュレートするのは正直かなり困難です。
+その代わり、同じ問題をUserモデルで直接テストするだけなら簡単に行えます。
+記憶ダイジェストを持たないユーザーを用意し (setupメソッドで定義した@userインスタンス変数ではtrueになります)、続いてauthenticated?を呼び出します (リスト 9.17)。
+この中で、記憶トークンを空欄のままにしていることにご注目ください。
+記憶トークンが使われる前にエラーが発生するので、記憶トークンの値は何でも構わないのです。
+
+##..............................
+リスト 9.17: ダイジェストが存在しない場合のauthenticated?のテスト red
+#...............................
+test/models/user_test.rb
+ require 'test_helper'
+
+class UserTest < ActiveSupport::TestCase
+
+  def setup
+    @user = User.new(name: "Example User", email: "user@example.com",
+                     password: "foobar", password_confirmation: "foobar")
+  end
+  .
+  .
+  .
+  test "authenticated? should return false for a user with nil digest" do
+    assert_not @user.authenticated?('')
+  end
+end
+#..............................
+
+上のコードではBCrypt::Password.new(nil)でエラーが発生するため、テストスイートは redになります。
+
+##..............................
+リスト 9.18: red
+#...............................
+$ rails test
+#..............................
+
+このテストを greenにするためには、記憶ダイジェストがnilの場合にfalseを返すようにすれば良さそうです (リスト 9.19)。
+
+##..............................
+リスト 9.19: authenticated?を更新して、ダイジェストが存在しない場合に対応 green
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # 渡されたトークンがダイジェストと一致したらtrueを返す
+  def authenticated?(remember_token)
+    return false if remember_digest.nil?
+    BCrypt::Password.new(remember_digest).is_password?(remember_token)
+  end
+
+  # ユーザーのログイン情報を破棄する
+  def forget
+    update_attribute(:remember_digest, nil)
+  end
+end
+#..............................
+
+ここでは、記憶ダイジェストがnilの場合にはreturnキーワードで即座にメソッドを終了しています。
+処理を中途で終了する場合によく使われるテクニックです。
+次のコードでもよいのですが、
+
+if remember_digest.nil?
+  false
+else
+  BCrypt::Password.new(remember_digest).is_password?(remember_token)
+end
+筆者はリスト 9.19のように明示的にreturnする方が、コードが若干短くなることもあって好みです。
+
+リスト 9.19のコードを使うと、テストスイート全体が greenになり、サブタイトルは両方とも修正されるはずです。
+
+##..............................
+リスト 9.20: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 9.16で修正した行をコメントアウトし、２つのログイン済みのタブによるバグを実際に確かめてみましょう。
+まず片方のタブでログアウトし、その後、もう１つのタブで再度ログアウトを試してみてください。
+リスト 9.19で修正した行をコメントアウトし、２つのログイン済みのブラウザによるバグを実際に確かめてみましょう。
+まず片方のブラウザでログアウトし、もう一方のブラウザを再起動してサンプルアプリケーションにアクセスしてみてください。
+上のコードでコメントアウトした部分を元に戻し、テストスイートが red から greenになることを確認しましょう。
+
+#-----------------------------
+[_ 9.2 ] [Remember me] チェックボックス
+#-----------------------------
+
+9.1.3のコードで、アプリケーションにプロ仕様の完全な認証システムが導入されました。
+本章の最後に、[remember me] チェックボックスでログインを保持する方法を解説します。
+チェックボックスを追加したモックアップを図 9.3に示します。
+
+
+#.....................
+images/figures/login_remember_me_mockup
+  ==> login_remember_me_mockup.png
+図 9.3: [remember me] チェックボックスのモックアップ
+#.....................
+
+今回の実装は、リスト 8.4のログインフォームにチェックボックスを追加するところから始めます。
+チェックボックスは、他のラベル、テキストフィールド、パスワードフィールド、送信ボタンと同様にヘルパーメソッドで作成できます。
+ただし、チェックボックスが正常に動作するためには、次のようにラベルの内側に配置する必要があります。
+
+<%= f.label :remember_me, class: "checkbox inline" do %>
+  <%= f.check_box :remember_me %>
+  <span>Remember me on this computer</span>
+<% end %>
+上をログインフォームに反映したコードをリスト 9.21に示します。
+
+##..............................
+リスト 9.21: [remember me] チェックボックスをログインフォームに追加する
+#...............................
+app/views/sessions/new.html.erb
+ <% provide(:title, "Log in") %>
+<h1>Log in</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(:session, url: login_path) do |f| %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :remember_me, class: "checkbox inline" do %>
+        <%= f.check_box :remember_me %>
+        <span>Remember me on this computer</span>
+      <% end %>
+
+      <%= f.submit "Log in", class: "btn btn-primary" %>
+    <% end %>
+
+    <p>New user? <%= link_to "Sign up now!", signup_path %></p>
+  </div>
+</div>
+#..............................
+
+リスト 9.21では、2つのCSSクラスcheckboxとinlineを使っています。
+Bootstrapではこれらをチェックボックスとテキスト「Remember me on this computer”」として同じ行に配置します。
+スタイルを整えるため、もう少しCSSルールを追加します (リスト 9.22)。
+表示されるログインフォームを図 9.4に示します。
+
+##..............................
+リスト 9.22: [remember me] チェックボックスのCSS
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* forms */
+.
+.
+.
+.checkbox {
+  margin-top: -10px;
+  margin-bottom: 10px;
+  span {
+    margin-left: 20px;
+    font-weight: normal;
+  }
+}
+
+#session_remember_me {
+  width: auto;
+  margin-left: 0;
+}
+#..............................
+
+
+#.....................
+images/figures/login_form_remember_me
+  ==> login_form_remember_me.png
+図 9.4: [remember me] チェックボックスを追加したloginフォーム
+#.....................
+
+ログインフォームの編集が終わったので、チェックボックスがオンのときにユーザーを記憶し、オフのときには記憶しないようにします。
+信じられないかもしれませんが、必要な準備はすべて終わっているので、実装はわずか1行で終わります。
+ログインフォームから送信されたparamsハッシュには既にチェックボックスの値が含まれています。
+リスト 9.21のフォームに無効な値を入力して実際に送信すれば、ページのデバッグ情報で値を確認することもできます。
+特に、次の値は、
+
+params[:session][:remember_me]
+チェックボックスがオンのときに’1’になり、オフのときに’0’になります。
+
+paramsハッシュのこの値を調べれば、送信された値に基いてユーザーを記憶したり忘れたりできるようになります15。
+
+if params[:session][:remember_me] == '1'
+  remember(user)
+else
+  forget(user)
+end
+詳細はコラム 9.2で説明しますが、次のような「三項演算子 (ternary operator)」を使うと、このようなif-thenの分岐構造を1行で表すことができます16。
+
+params[:session][:remember_me] == '1' ? remember(user) : forget(user)
+このコードを使うことで、Sessionsコントローラのcreateアクション内にあったremember user (リスト 9.7) が驚くほどコンパクトなコードになりました (リスト 9.23)。
+読者の皆様は、cost変数の定義で使った三項演算子 (リスト 8.21) のコードも既に理解できるようになったことでしょう。
+
+##..............................
+リスト 9.23: [remember me] チェックボックスの送信結果を処理する
+#...............................
+app/controllers/sessions_controller.rb
+ class SessionsController < ApplicationController
+
+  def new
+  end
+
+  def create
+    user = User.find_by(email: params[:session][:email].downcase)
+    if user && user.authenticate(params[:session][:password])
+      log_in user
+      params[:session][:remember_me] == '1' ? remember(user) : forget(user)
+      redirect_to user
+    else
+      flash.now[:danger] = 'Invalid email/password combination'
+      render 'new'
+    end
+  end
+
+  def destroy
+    log_out if logged_in?
+    redirect_to root_url
+  end
+end
+#..............................
+
+リスト 9.23の実装によって、ログインシステムの実装がついに完了しました。
+ブラウザでこのチェックボックスを実際にオンにしたりオフにしたりして、動作を確認してみましょう。
+
+#.....................................
+コラム 9.2. 10種類の人々
+#.....................................
+「この世には10種類の人間がいる。
+2進法を理解できる奴と、2進法を理解できない奴だ」は、この業界に古くから伝わるジョークです。
+ここで言う「10種類」とは、もちろん10進法ではなく2進法のことです。
+つまり、2進法で「10」を解釈できれば、「2種類」という意味だと理解できます。
+上のジョークに倣えば、次のようなジョークもできそうです。
+「この世には10種類の人々がいる。
+三項演算子が好きな人、嫌いな人、三項演算子を知らない人」。
+ちなみにもし3番目に該当したとしても、このコラムを読めばそのカテゴリの人ではなくなりますので、ご心配なく。
+
+プログラミング経験を重ねるうちに、論理値に応じて分岐する、次のような制御フローが頻繁に出現することに気付くと思います。
+
+  if boolean?
+    何かをする
+  else
+    別のことをする
+  end
+Rubyや他の言語 (C/C++、Perl、PHP、Javaなど) では、上のようなフローをよりコンパクトな三項演算子 (ternary operator) と呼ばれる表現で置き換えることができます (3つの部分から構成されるためそのように呼ばれます)。
+
+  論理値? ? 何かをする : 別のことをする
+例えば、次のような代入文を三項演算子で置き換えることもできます。
+
+  if boolean?
+    var = foo
+  else
+    var = bar
+  end
+三項演算子を使うと、上のコードはこのようになります。
+
+  var = boolean? ? foo : bar
+最後に、三項演算子をメソッドの戻り値として使うこともよくあります。
+
+  def foo
+    do_stuff
+    boolean? ? "bar" : "baz"
+  end
+Rubyでは暗黙的にメソッドの最後に評価した式の結果を返すので、上のfooメソッドは、boolean?がtrueであるかfalseであるかに応じて、"bar"または"baz"をそれぞれ返します。
+
+演習
+ブラウザでcookies情報を調べ、[remember me] をチェックしたときに意図した結果になっているかどうかを確認してみましょう。
+コンソールを開き、三項演算子を使った実例を考えてみてください (コラム 9.2)。
+
+#-----------------------------
+[_ 9.3 ] [Remember me] のテスト
+#-----------------------------
+
+[remember me] 機能は既に快調に動作していますが、ここで終わらせずにテストをちゃんと書き、動作をテストで確認できるようにしておくことが重要です。
+テストを書く理由の１つは、今行った実装のエラーをキャッチできるようにすることです。
+しかしもっと重要な理由は、ユーザーを永続化するコードの中心部分が、実はまだまったくテストされていないからです。
+これらの課題を達成するには、もう少し新しいテストのテクニックを覚える必要がありますが、それによりテストスイートが一段と強力になります。
+
+
+#-----------------------------------------------------
+[__ 9.3.1 ] [Remember me] ボックスをテストする
+#-----------------------------------------------------
+
+恥を忍んで申し上げると、筆者が自分自身でリスト 9.23でチェックボックスの処理を実装したときは、
+
+params[:session][:remember_me] == '1' ? remember(user) : forget(user)
+最初は上のコードではなく、次のコードを使っていました。
+
+params[:session][:remember_me] ? remember(user) : forget(user)
+この流れでは、params[:session][:remember_me]の値は’0’または’1’のいずれかになりますが、そこに罠がありました。
+0も1もRubyの論理値ではtrueであることを思い出してください。
+したがって、値は常にtrueになってしまい、チェックボックスは常にオンになっているのと同じ動作になってしまいました。
+この種のミスはまさに、テストでキャッチすべきエラーです。
+
+ユーザーが記憶されるにはログインが必要です。
+そこで、テスト内でユーザーがログインできるようにするためのヘルパーメソッドを定義することから始めます。
+リスト 8.23では、postメソッドと有効なsessionハッシュを使ってログインしましたが、毎回このようなことをするのは面倒です。
+そこで、log_in_asというヘルパーメソッドを作成してテスト用の特別なログインができるようにし、無駄な繰り返しを排除します。
+
+ログイン済みのユーザーをテストする方法はいくつかありますが、今回はコントローラの単体テストを使っていきましょう。
+具体的には、sessionメソッドを直接操作して、:user_idキーにuser.idの値を代入してみます (これはリスト 8.14の方法と同じです)。
+
+def log_in_as(user)
+  session[:user_id] = user.id
+end
+今回は既存のlog_inメソッド (リスト 8.14) との混乱を防ぐため、あえてメソッド名をlog_in_asとしました。
+このテスト用のメソッドを、test_helperファイルのActiveSupport::TestCaseクラス内で定義してみます (リスト 8.26のis_logged_in?ヘルパーと同じ場所です)。
+
+class ActiveSupport::TestCase
+  fixtures :all
+
+  # テストユーザーがログイン中の場合にtrueを返す
+  def is_logged_in?
+    !session[:user_id].nil?
+  end
+
+  # テストユーザーとしてログインする
+  def log_in_as(user)
+    session[:user_id] = user.id
+  end
+end
+(実は本章ではこのヘルパーがなくても何とかなるのですが、説明を入れるタイミングとして適切で、また、第10章で実際に必要になるので今のタイミングで追加しています。
+)
+
+次に統合テストでも同様のヘルパーを実装していきます。
+ただし統合テストではsessionを直接取り扱うことができないので、代わりにSessionsリソースに対してpostを送信することで代用します (リスト 8.23)。
+メソッド名は単体テストと同じ、log_in_asメソッドとします。
+
+class ActionDispatch::IntegrationTest
+
+  # テストユーザーとしてログインする
+  def log_in_as(user, password: 'password', remember_me: '1')
+    post login_path, params: { session: { email: user.email,
+                                          password: password,
+                                          remember_me: remember_me } }
+  end
+end
+メソッド名は同じlog_in_asですが、今回は統合テストで扱うヘルパーなのでActionDispatch::IntegrationTestクラスの中で定義します。
+これにより、私たち開発者は単体テストか統合テストかを意識せずに、ログイン済みの状態をテストしたいときはlog_in_asメソッドをただ呼び出せば良い、ということになります (訳注: これもmatzの説明するダックタイピングの一種と言えそうです)。
+
+最後に、何かあったときにすぐに見つけられるよう、この２つのlog_in_asヘルパーを同じ場所にまとめておきましょう (リスト 9.24)。
+
+##..............................
+リスト 9.24: log_in_asヘルパーを追加する
+#...............................
+test/test_helper.rb
+ ENV['RAILS_ENV'] ||= 'test'
+.
+.
+.
+class ActiveSupport::TestCase
+  fixtures :all
+
+  # テストユーザーがログイン中の場合にtrueを返す
+  def is_logged_in?
+    !session[:user_id].nil?
+  end
+
+  # テストユーザーとしてログインする
+  def log_in_as(user)
+    session[:user_id] = user.id
+  end
+end
+
+class ActionDispatch::IntegrationTest
+
+  # テストユーザーとしてログインする
+  def log_in_as(user, password: 'password', remember_me: '1')
+    post login_path, params: { session: { email: user.email,
+                                          password: password,
+                                          remember_me: remember_me } }
+  end
+end
+(テストコードがより便利になるように、log_in_asメソッド (リスト 9.24) ではキーワード引数 (リスト 7.13) のパスワードと [remember me] チェックボックスのデフォルト値を、それぞれ’password’と’1’に設定しています。
+)
+
+#..............................
+
+最後に、[remember me] チェックボックスの動作を確認するため、2つのテストを作成します。
+チェックボックスがオンになっている場合とオフになっている場合のテストです。
+リスト 9.24でログインヘルパーメソッドを定義しておいたので、このテストは簡単に書くことができます。
+例えばオンに対するテストは次のようになり
+
+log_in_as(@user, remember_me: '1')
+オフの場合はこのようになります。
+
+log_in_as(@user, remember_me: '0')
+(上のコードの’1’はremember_meのデフォルト値なので、1つ目のテストでは省略してもよいのですが、2つのコードを見比べやすいようにあえて省略しませんでした。
+)
+
+ログインに成功すれば、cookies内部のremember_tokenキーを調べることで、ユーザーが保存されたかどうかをチェックできるようになります。
+cookiesの値がユーザーの記憶トークンと一致することを確認できれば理想的なのですが、現在の設計ではテストでこの確認を行うことはできません。
+コントローラ内のuser変数には記憶トークンの属性が含まれていますが、remember_tokenは実在しない「仮想」のものなので、@userインスタンス変数の方には含まれていません。
+この課題は大して難しくないので、9.3.1.1の演習に回すことにします。
+さしあたって、今は関連するcookiesがnilであるかどうかだけをチェックすればよいことにします。
+
+実はもう１つ地味な問題があります (筆者はこれで何時間も躓いてしまいました...)。
+テスト内ではcookiesメソッドにシンボルを使えない、という問題です。
+そのため、
+
+cookies[:remember_token]
+上のコードは常にnilになってしまいます。
+ありがたいことに、文字列をキーにすればcookiesでも使えるようになるので、
+
+cookies['remember_token']
+上のように書けば期待どおりに値が返されます。
+以上の結果を反映したテストコードをリスト 9.25に示します (リスト 8.23でusers(:michael)と書くと、リスト 8.22のfixtureユーザーを参照していたことを思い出しましょう)。
+
+##..............................
+リスト 9.25: [remember me] チェックボックスのテスト green
+#...............................
+test/integration/users_login_test.rb
+ require 'test_helper'
+
+class UsersLoginTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+  .
+  .
+  .
+  test "login with remembering" do
+    log_in_as(@user, remember_me: '1')
+    assert_not_empty cookies['remember_token']
+  end
+
+  test "login without remembering" do
+    # クッキーを保存してログイン
+    log_in_as(@user, remember_me: '1')
+    delete logout_path
+    # クッキーを削除してログイン
+    log_in_as(@user, remember_me: '0')
+    assert_empty cookies['remember_token']
+  end
+end
+#..............................
+
+皆さんが筆者と同じ間違いをしていなければ、このテストは greenになっているはずでしょう。
+
+##..............................
+リスト 9.26: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 9.25の統合テストでは、仮想のremember_token属性にアクセスできないと説明しましたが、実は、assignsという特殊なテストメソッドを使うとアクセスできるようになります。
+コントローラで定義したインスタンス変数にテストの内部からアクセスするには、テスト内部でassignsメソッドを使います。
+このメソッドにはインスタンス変数に対応するシンボルを渡します。
+例えばcreateアクションで@userというインスタンス変数が定義されていれば、テスト内部ではassigns(:user)と書くことでインスタンス変数にアクセスできます。
+本チュートリアルのアプリケーションの場合、Sessionsコントローラのcreateアクションでは、userを (インスタンス変数ではない) 通常のローカル変数として定義しましたが、これをインスタンス変数に変えてしまえば、cookiesにユーザーの記憶トークンが正しく含まれているかどうかをテストできるようになります。
+このアイデアに従ってリスト 9.27とリスト 9.28の不足分を埋め (ヒントとして?やFILL_INを目印に置いてあります)、[remember me] チェックボックスのテストを改良してみてください。
+##..............................
+リスト 9.27: createアクション内でインスタンス変数を使うためのテンプレート
+#...............................
+app/controllers/sessions_controller.rb
+ class SessionsController < ApplicationController
+
+  def new
+  end
+
+  def create
+    ?user = User.find_by(email: params[:session][:email].downcase)
+    if ?user && ?user.authenticate(params[:session][:password])
+      log_in ?user
+      params[:session][:remember_me] == '1' ? remember(?user) : forget(?user)
+      redirect_to ?user
+    else
+      flash.now[:danger] = 'Invalid email/password combination'
+      render 'new'
+    end
+  end
+
+  def destroy
+    log_out if logged_in?
+    redirect_to root_url
+  end
+end
+#..............................
+
+##..............................
+リスト 9.28: [remember me] テストを改良するためのテンプレート green
+#...............................
+test/integration/users_login_test.rb
+ require 'test_helper'
+
+class UsersLoginTest < ActionDispatch::IntegrationTest
+
+  def setup
+    @user = users(:michael)
+  end
+  .
+  .
+  .
+  test "login with remembering" do
+    log_in_as(@user, remember_me: '1')
+    assert_equal FILL_IN, assigns(:user).FILL_IN
+  end
+
+  test "login without remembering" do
+    # クッキーを保存してログイン
+    log_in_as(@user, remember_me: '1')
+    delete logout_path
+    # クッキーを削除してログイン
+    log_in_as(@user, remember_me: '0')
+    assert_empty cookies['remember_token']
+  end
+  .
+  .
+  .
+end
+#..............................
+
+
+#-----------------------------------------------------
+[__ 9.3.2 ] [Remember me] をテストする
+#-----------------------------------------------------
+
+9.1.2では、それまでの節で実装した永続的セッションが動作するかどうかを手動で確認していました。
+しかし実は、current_user内のある複雑な分岐処理については、これまでまったくテストが行われていないのです。
+筆者はこのようなとき、テストを忘れている疑いのあるコードブロック内にわざと例外発生を仕込むというテクニックを使います。
+つまり、そのコードブロックがテストから漏れていれば、テストはパスしてしまうはずです。
+コードブロックがテストから漏れていなければ、例外が発生してテストが中断するはずです。
+現在のコードでこれを行ってみた結果をリスト 9.29に示します。
+
+##..............................
+リスト 9.29: テストされていないブランチで例外を発生するgreen
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+  .
+  .
+  .
+  # 記憶トークンcookieに対応するユーザーを返す
+  def current_user
+    if (user_id = session[:user_id])
+      @current_user ||= User.find_by(id: user_id)
+    elsif (user_id = cookies.signed[:user_id])
+#..............................
+
+      raise       # テストがパスすれば、この部分がテストされていないことがわかる
+      user = User.find_by(id: user_id)
+      if user && user.authenticated?(cookies[:remember_token])
+        log_in user
+        @current_user = user
+      end
+    end
+  end
+  .
+  .
+  .
+end
+この段階でテストを実行してみると、 greenになります。
+
+##..............................
+リスト 9.30: green
+#...............................
+$ rails test
+#..............................
+
+リスト 9.29のコードが正常でないことがわかった以上、これはもちろん問題です。
+さらに申し上げると、この種の永続的セッションを手動で確認するのは非常に面倒なので、current_userをリファクタリングするのであれば同時にテストも作成しておくことが重要です (これは第11章でやりましょう)。
+
+また、リスト 9.24で定義したlog_in_asヘルパーメソッドでは、session[:user_id]と定義してしまっています。
+このままでは、current_userメソッドが抱えている複雑な分岐処理を統合テストでチェックすることが非常に困難です。
+ただありがたいことに、以前作成した次のSessionsヘルパーのテストでcurrent_userを直接テストすれば、この制約を突破することができます。
+
+$ touch test/helpers/sessions_helper_test.rb
+テスト手順はシンプルです。
+
+fixtureでuser変数を定義する
+渡されたユーザーをrememberメソッドで記憶する
+current_userが、渡されたユーザーと同じであることを確認します
+上の手順ではrememberメソッドではsession[:user_id]が設定されないので、これで問題となっている複雑な分岐処理もテストできるようになります。
+作成したコードをリスト 9.31に示します。
+
+##..............................
+リスト 9.31: 永続的セッションのテスト
+#...............................
+test/helpers/sessions_helper_test.rb
+ require 'test_helper'
+
+class SessionsHelperTest < ActionView::TestCase
+
+  def setup
+    @user = users(:michael)
+    remember(@user)
+  end
+
+  test "current_user returns right user when session is nil" do
+    assert_equal @user, current_user
+    assert is_logged_in?
+  end
+
+  test "current_user returns nil when remember digest is wrong" do
+    @user.update_attribute(:remember_digest, User.digest(User.new_token))
+    assert_nil current_user
+  end
+end
+#..............................
+
+このとき、テストをもう１つ追加している点にご注目ください。
+このテストでは、ユーザーの記憶ダイジェストが記憶トークンと正しく対応していない場合に現在のユーザーがnilになるかどうかをチェックしています。
+これによって、次のネストしたif文内のauthenticated?の式をテストします。
+
+if user && user.authenticated?(cookies[:remember_token])
+ところで、リスト 9.31では次のように書いてもよいように思えるかもしれません。
+
+assert_equal current_user, @user
+実際、上のように書いても動作します。
+ただ5.3.4.1で簡単に触れたように、assert_equalの引数は「期待する値, 実際の値」の順序で書く点に注意してください。
+
+assert_equal <expected>, <actual>
+この原則に従うと、リスト 9.31のコードは次のようになります。
+
+assert_equal @user, current_user
+結果、リスト 9.31のテストが (期待されていたとおり) red になります。
+
+##..............................
+リスト 9.32: red
+#...............................
+$ rails test test/helpers/sessions_helper_test.rb
+#..............................
+
+ここまでできれば、current_userメソッドに仕込んだraiseを削除して元に戻す (リスト 9.31) ことで、リスト 9.33のテストがパスするはずです
+
+##..............................
+リスト 9.33: 例外発生部分を削除する green
+#...............................
+app/helpers/sessions_helper.rb
+ module SessionsHelper
+  .
+  .
+  .
+  # 記憶トークンcookieに対応するユーザーを返す
+  def current_user
+    if (user_id = session[:user_id])
+      @current_user ||= User.find_by(id: user_id)
+    elsif (user_id = cookies.signed[:user_id])
+      user = User.find_by(id: user_id)
+      if user && user.authenticated?(cookies[:remember_token])
+        log_in user
+        @current_user = user
+      end
+    end
+  end
+  .
+  .
+  .
+end
+#..............................
+
+これでテストスイートは greenになるはずです。
+
+##..............................
+リスト 9.34: green
+#...............................
+$ rails test
+#..............................
+
+current_userの複雑な分岐処理をテストできたので、今後は手動で１つ１つ確認しなくても、自信を持って回帰バグをキャッチできます。
+
+演習
+リスト 9.33にあるauthenticated?の式を削除すると、リスト 9.31の２つ目のテストで失敗することを確かめてみましょう (このテストが正しい対象をテストしていることを確認してみましょう)。
+
+#-----------------------------
+[_ 9.4 ] 最後に
+#-----------------------------
+
+前々章から第9章までの間に、ユーザー登録からログイン機構に至るまで、広大な知識について幅広く学んできました。
+基本的な認証機構に必要な残りの作業は、ログイン状態やログイン済みのユーザーIDに基いて、ページへのアクセス権限を制限する実装 (認可モデル) だけです。
+次の章では、ログイン済みのユーザーであれば自分のプロフィール情報を編集できるようにしていきましょう。
+
+さて、次の章に進む前に、本章の変更をmasterブランチにマージしておきましょう。
+
+$ rails test
+$ git add -A
+$ git commit -m "Implement advanced login"
+$ git checkout master
+$ git merge advanced-login
+$ git push
+Herokuにデプロイしても、Heroku上でマイグレーションを実行するまでの間は一時的にアクセスできない状態 (エラーページ) になるので、ご注意ください。
+トラフィックの多い本番サイトでは、このような変更を行う前にメンテナンスモードをオンにしておくことが一般的です。
+
+$ heroku maintenance:on
+$ git push heroku
+$ heroku run rails db:migrate
+$ heroku maintenance:off
+上のような操作でデプロイとマイグレーションを行うと、一時的にアクセスできない状態の間に標準のメンテナンスページを表示することができます (本チュートリアルで必要になることはありませんが、一度はエラーページを目にしておくのもよいでしょう)。
+詳しくは、Herokuのエラーに関するページ (英語) にあるドキュメントを参照してください。
+
+
+#-----------------------------------------------------
+[__ 9.4.1 ] 本章のまとめ
+#-----------------------------------------------------
+
+Railsでは、あるページから別のページに移動するときに状態を保持することができる。
+ページの状態を長期間保持したいときは、cookiesメソッドを使って永続的なセッションにする
+記憶トークンと記憶ダイジェストをユーザーごとに関連付けて、永続的セッションが実現できる
+cookiesメソッドを使うと、ユーザーのブラウザにcookiesなどを保存できる
+ログイン状態は、セッションもしくはクッキーの状態に基づいて決定される
+セッションとクッキーをそれぞれ削除すると、ユーザーのログアウトが実現できる
+三項演算子を使用すると、単純なif-then文をコンパクトに記述できる
+
+NOTE: 1 
+セッションハイジャックは、セキュリティ上の注意を呼びかけるためにこれを実演するFiresheepアプリケーションによって広く知られるようになりました。
+Firesheepを使うと、公共Wi-Fiネットワーク経由で接続したときに多くの有名Webサイトの記憶トークンが丸見えになっていることがわかります。
+ ↑
+
+NOTE: 2 
+Rails 5から、ランダムなトークンを生成するhas_secure_tokenメソッドが導入されました。
+しかし、このメソッドはハッシュ化されていない値をデータベースに保存するため、セキュリティ上の目的から本チュートリアルでは採用しないことにしました。
+ ↑
+
+NOTE: 3 
+このメソッドは、RailsCastの「remember me」の記事を元に選びました。
+ ↑
+
+NOTE: 4 
+実際、これでもOKなのです。
+bcryptのハッシュはソルト化されているので、2人のユーザーのパスワードが本当に一致するのかどうかは、ハッシュからは分かりません。
+(訳注: 「ソルト」とは、暗号を強化するために加えられる任意の短い文字列です。
+念には念を入れて「塩ひとつまみ」を加えるというイメージであり、英語の「take it with a grain of salt (半分疑ってかかる)」という言い回しが語源です) ↑
+
+NOTE: 5 
+記憶トークンが一意に保たれることで、攻撃者はユーザーIDと記憶トークンを両方とも奪い取ることに成功しない限りセッションをハイジャックできなくなります。
+ ↑
+何人かの開発者は、念のためにさらに何かを付け足した方が良いと思うかもしれません。
+ただ、その努力の対価は 
+10
+−
+40
+ 以下の確率で発生する問題に備えるようなものです。
+これは、もし仮に100万個のトークンを生成したとしても、そのトークンが衝突する可能性は 
+10
+−
+23
+
+NOTE: 6 
+ 以下である、という意味になります。
+ ↑
+
+NOTE: 7 
+一般に、あるメソッドがオブジェクトのインスタンスを必要としていない場合は、クラスメソッドにするのが常道です。
+実際、11.2ではここでの決定が重要になってきます。
+ ↑
+
+NOTE: 8 
+一般的には、デジタル署名と暗号化はそれぞれ違った処理をしますが、Rails 4からは、signedメソッドを使って両方の処理をまとめて行うようになりました。
+ ↑
+
+NOTE: 9 
+6.3.1で解説したように、「暗号化されていないパスワード (unencrypted password)」という呼び方は正しくありません。
+ここで言うセキュアなパスワードとは、単にハッシュ化したという意味であり、本格的な暗号化は行われていないからです。
+ ↑
+
+NOTE: 10 
+筆者はこのような場合、代入式全体をカッコで囲むようにしています。
+これが比較でないことを思い出せるようにするためです。
+ ↑
+読者のJack Fahnestockから、現在の設計だと複数端末のログインに対応できないというフィードバックをもらいました。
+
+ブラウザＡを起動し、“remember me”をチェックしてログインする (ハッシュ化された記憶トークンをremember_digestに保存する)
+ブラウザＢを起動し、“remember me”をチェックしてログインする (ハッシュ化された記憶トークンをremember_digestに保存し、ブラウザＡが持つ記憶トークンを無効化する)
+ブラウザＡを閉じる (current_userメソッドが永続クッキーを使ってログインするようになる)
+ブラウザＡを起動する (ブラウザ内に永続クッキーはあるが、logged_in?がfalseを返してしまう)
+確かに現在の設計ではユーザーが複数の端末からログインすることを想定していないため、ユーザーは２つ以上のブラウザでRemember me機能を使うことができません。
+現在の設計よりやや複雑になりますが、この問題に対する解決策は記憶ダイジェストを１つのテーブルとして新たに作成し、そのテーブルをユーザーのIDと紐づけることが考えられます。
+例えば現在のユーザーを見つけるときは、そのテーブルを通して記憶ダイジェストと対応する記憶トークンをチェックするようにします。
+また、リスト 9.11にあるforgetメソッドも同様に変更し、現在使っているブラウザに対応している記憶ダイジェストのみを削除させる必要があるでしょう。
+なお、セキュリティのことを考慮して、ユーザーがログアウトをした場合はそのユーザーに紐付いているすべてのダイジェストを削除しておくと良さそうです。
+
+
+NOTE: 11 ????? Here
+システムでのcookiesの調べ方については、「<ブラウザ名> inspect cookies」でググってください。 ↑
+ ↑
+
+NOTE: 12 
+システムでのcookiesの調べ方については、「<ブラウザ名> inspect cookies」でググってください。
+ ↑
+
+NOTE: 13 
+読者のPaulo Célio Júniorからのご指摘でした。
+ありがとうございました。
+ ↑
+
+NOTE: 14 
+読者のNiels de Ronからのご指摘でした。
+ありがとうございます。
+ ↑
+
+NOTE: 15 
+ユーザーがこのチェックボックスをオフすると、すべてのコンピュータ上のすべてのブラウザからログアウトしますので、注意が必要です。
+ブラウザごとにユーザーのログインセッションを記憶する設計に変更すれば、ユーザーにとってもう少し便利にはなりますが、その分セキュリティが低下するうえ、実装も面倒になります。
+ やる気の余っている方は実装してみてもよいでしょう。
+ ↑
+
+NOTE: 16 
+以前はremember userをカッコなしで書きましたが、三項演算子ではカッコを省略すると文法エラーになります。
+ ↑
+«前の章                                次の章»

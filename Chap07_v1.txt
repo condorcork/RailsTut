@@ -1,0 +1,2051 @@
+第7章
+ユーザー登録
+Userモデルができあがったので、いよいよユーザー登録機能を追加しましょう。
+7.2ではHTML フォームを使ってWebアプリケーションに登録情報を送信します。
+続いて7.4ではユーザーを新規作成して情報をデータベースに保存します。
+ユーザー登録手続きの最後には、作成されたユーザーの新しいプロフィールを表示できるようにするために、ユーザーを表示するためのページを作成し、ユーザー用のRESTアーキテクチャを実装する第一歩を踏み出します (2.2.2)。
+それに伴い、5.3.4で実装した簡明かつ表現豊かな統合テストに対して、 いくつかのテストを追加していきます。
+
+本章では、第6章で作成したUserモデルのバリデーションを信頼し、有効なメールアドレスを持っている (可能性のある) 新規ユーザーを増やしていきます。
+第11章では、 メールアドレスが本当に有効であることを確かめるために、アカウントを有効化する機能をサインアップの手順に追加します。
+
+本チュートリアルはプロレベルの内容を扱いながらも、できるだけシンプルになるように努めていますが、それでもWeb開発というのが複雑かつ難しいトピックであることには変わりません。
+実際、この第7章からは難易度が少しずつ上がっていきます。
+このため本章からは、これまで以上にじっくりと時間をかけて読み進め、また、必要であれば復習もやっていくことをオススメします (一部の読者は各章を2回ずつ読んでいますが、これも１つの良いアプローチだと思います)。
+あるいは、もしRailsチュートリアルを読み進めていくには基礎知識が足りないと感じた場合には、Learn Enough Societyを購読したり、基礎編である Learn Enough Ruby to Be Dangerousや Learn Enough Sinatra to Be Dangerous、 Learn Enough Rails to Be Dangerousなどのチュートリアルを読んでみても良いかもしれません (訳注: すべて英語となります。
+日本語化は今しばらくお待ちいただければ...)。
+
+
+#-----------------------------
+[_ 7.1 ] ユーザーを表示する
+#-----------------------------
+
+この節では、まずユーザーの名前とプロフィール写真を表示するためのページを作成します。
+モックアップを図 7.1に示しました1。
+ユーザープロフィールページの最終的な目標は、図 7.2のようにユーザーのプロフィール写真と基本ユーザーデータ、そしてマイクロポストの一覧を表示することです2 (図 7.2では、有名なlorem ipsumダミーテキストを使っています。
+このテキストの成り立ちには面白いエピソードがあるので機会がありましたらどうぞ)。
+このページを作成したら、第14章のサンプルアプリケーションで使う予定です。
+
+バージョン管理を使っている場合は、いつもと同じようにトピックブランチを作成します。
+
+$ git checkout -b sign-up
+
+#.....................
+images/figures/profile_mockup_profile_name_bootstrap
+  ==> profile_mockup_profile_name_bootstrap.png
+図 7.1: この節で作成するユーザープロフィールのモックアップ
+#.....................
+
+
+#.....................
+images/figures/profile_mockup_bootstrap
+  ==> profile_mockup_bootstrap.png
+図 7.2: 理想とする最終的なプロフィールページのモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 7.1.1 ] デバッグとRails環境
+#-----------------------------------------------------
+
+この節で作成するプロフィールは、このアプリケーションにおける初めての真に動的なページになります。
+ビューそのものは1ページのコードですが、アプリケーションのデータベースから取り出した情報を使って各プロフィールの表示をカスタマイズします。
+サンプルアプリケーションに動的なページを追加する準備として、ここでWebサイトのレイアウトにデバッグ情報を追加しましょう (リスト 7.1)。
+これにより、ビルトインのdebugメソッドとparams変数を使って、各プロフィールページにデバッグ用の情報が表示されるようになります (詳細については7.1.2で解説します)。
+
+##..............................
+リスト 7.1: サイトのレイアウトにデバッグ情報を追加する
+#...............................
+app/views/layouts/application.html.erb
+ <!DOCTYPE html>
+<html>
+  .
+  .
+  .
+  <body>
+    <%= render 'layouts/header' %>
+    <div class="container">
+      <%= yield %>
+      <%= render 'layouts/footer' %>
+      <%= debug(params) if Rails.env.development? %>
+    </div>
+  </body>
+</html>
+#..............................
+
+本番環境に展開したアプリケーションではデバッグ情報を表示したくないので、リスト 7.1には次のコードを記述してあります。
+
+if Rails.env.development?
+こうしておくと、デバッグ情報はRailsの3つのデフォルト環境のうち、開発環境 (development) だけで表示されるようになります (コラム 7.1)3。
+特に、Rails.env.development?がtrueになるのは開発環境に限られるため、次の埋め込みRubyは
+
+<%= debug(params) if Rails.env.development? %>
+本番アプリケーションやテストで挿入されることはありません。
+(テスト環境でデバッグ情報が表示されても直接問題になることはありませんが、よいことではありません。
+デバッグ情報は開発環境以外で表示させないべきです。
+)
+
+#.....................................
+コラム 7.1. Railsの3つの環境
+#.....................................
+Railsにはテスト環境 (test)、開発環境 (development)、そして本番環境 (production) の3つの環境がデフォルトで装備されています。
+Rails consoleのデフォルトの環境はdevelopmentです。
+
+  $ rails console
+  Loading development environment
+  >> Rails.env
+  => "development"
+  >> Rails.env.development?
+  => true
+  >> Rails.env.test?
+  => false
+上のように、RailsにはRailsというオブジェクトがあり、それには環境の論理値 (boolean) を取るenvという属性があります。
+例えば、Rails.env.test?はテスト環境ではtrueを返し、それ以外の環境ではfalseを返します。
+
+テスト環境のデバッグなど、他の環境でconsoleを実行する必要が生じた場合は、環境をパラメータとしてconsoleスクリプトに渡すことができます。
+
+  $ rails console test
+  Loading test environment
+  >> Rails.env
+  => "test"
+  >> Rails.env.test?
+  => true
+同様にしてRailsサーバーもデフォルトではdevelopmentが使われますが、次のように他の環境を明示的に実行することもできます。
+
+  $ rails server --environment production
+アプリケーションを本番環境で実行する場合、本番のデータベースが利用できないとアプリケーションを実行できません。
+そのため、rails db:migrateを本番環境で実行して本番データベースを作成します。
+
+  $ rails db:migrate RAILS_ENV=production
+(注: console、server、migrateの3つのコマンドでは、デフォルト以外の環境を指定する方法がそれぞれ異なっており、混乱を招く可能性があります。
+このため、3つの場合のすべてを本コラムで説明しました。
+なお、このRAILS_ENV=<env>は先頭に持ってきても問題ありません。
+例えば RAILS_ENV=production rails server といった風に実行してもうまく動きます。
+)
+
+ところで、サンプルアプリケーションを既にHeroku上にデプロイしている場合は、heroku run rails consoleというコマンドを打つことで、本番環境を確認することができます。
+
+  $ heroku run rails console
+  >> Rails.env
+  => "production"
+  >> Rails.env.production?
+  => true
+当然ながら、Herokuは本番サイト用のプラットフォームなので、実行されるアプリケーションはすべて本番環境となります。
+
+デバッグ出力をきれいに整形するために、第5章で作成したカスタムスタイルシートをリスト 7.2のように追加します。
+
+##..............................
+リスト 7.2: デバッグ表示を整形するための追加と、Sassのミックスイン.
+#...............................
+app/assets/stylesheets/custom.scss
+ @import "bootstrap-sprockets";
+@import "bootstrap";
+
+/* mixins, variables, etc. */
+
+$gray-medium-light: #eaeaea;
+
+@mixin box_sizing {
+  -moz-box-sizing:    border-box;
+  -webkit-box-sizing: border-box;
+  box-sizing:         border-box;
+}
+.
+.
+.
+/* miscellaneous */
+
+.debug_dump {
+  clear: both;
+  float: left;
+  width: 100%;
+  margin-top: 45px;
+  @include box_sizing;
+}
+#..............................
+
+ここでSassのミックスイン機能 (ここではbox_sizing) を使っています。
+ミックスイン機能を使うことで、CSSルールのグループをパッケージ化して複数の要素に適用することができます。
+例えば次のようなコードは、
+
+.debug_dump {
+  .
+  .
+  .
+  @include box_sizing;
+}
+このように変換されます。
+
+.debug_dump {
+  .
+  .
+  .
+  -moz-box-sizing:    border-box;
+  -webkit-box-sizing: border-box;
+  box-sizing:         border-box;
+}
+ミックスインは7.2.1でも使います。
+今回の場合、デバッグ出力は図 7.3のようになります4。
+
+
+#.....................
+images/figures/home_page_with_debug_3rd_edition
+  ==> home_page_with_debug_3rd_edition.png
+図 7.3: サンプルアプリケーションのHomeページにデバッグ情報を表示する
+#.....................
+
+図 7.3のデバッグ出力には、描画されるページの状態を把握するのに役立つ情報が含まれます。
+
+---
+controller: static_pages
+action: home
+これはparamsに含まれている内容で、YAML5という形式で書かれています。
+YAMLは基本的にハッシュであり、コントローラとページのアクションを一意に指定します。
+なお7.1.2では、別の形式の例も紹介していきます。
+
+演習
+ブラウザから /about にアクセスし、デバッグ情報が表示されていることを確認してください。
+このページを表示するとき、どのコントローラとアクションが使われていたでしょうか? paramsの内容から確認してみましょう。
+Railsコンソールを開き、データベースから最初のユーザー情報を取得し、変数userに格納してください。
+その後、puts user.attributes.to_yamlを実行すると何が表示されますか? ここで表示された結果と、yメソッドを使ったy user.attributesの実行結果を比較してみましょう。
+
+#-----------------------------------------------------
+[__ 7.1.2 ] Usersリソース
+#-----------------------------------------------------
+
+ユーザープロフィールページを作成するには、その前にデータベースにユーザーが登録されている必要があります。
+これはいわゆる「卵が先か鶏が先か」問題です。
+このWebサイトでは、登録ページがない状態でどうやってユーザーを登録しておけばよいでしょうか。
+幸い、この問題は既に解決されています。
+6.3.4でRailsコンソールを使ってユーザーレコードを登録してありました。
+したがって、データベースの中に一人のユーザーがいるはずです。
+
+$ rails console
+>> User.count
+=> 1
+>> User.first
+=> #<User id: 1, name: "Michael Hartl", email: "mhartl@example.com",
+created_at: "2016-05-23 20:36:46", updated_at: "2016-05-23 20:36:46",
+password_digest: "$2a$10$xxucoRlMp06RLJSfWpZ8hO8Dt9AZX...">
+(もしまだデータベース上に一人もユーザーがいない場合は、6.3.4に戻ってユーザーを追加してください。
+) 先ほど、コンソールの出力結果からユーザーのIDが 1 であることを確認しました。
+次の目標は、このようなユーザー情報をWebアプリケーション上に表示することです。
+ここでは、Railsアプリケーションで好まれているRESTアーキテクチャ (コラム 2.2) の習慣に従うことにしましょう。
+つまり、データの作成、表示、更新、削除をリソース (Resources) として扱うということです。
+HTTP標準には、これらに対応する４つの基本操作 (POST、GET、PATCH、DELETE) が定義されているので、これらの基本操作を各アクションに割り当てていきます (コラム 3.2) 。
+
+RESTの原則に従う場合、リソースへの参照はリソース名とユニークなIDを使うのが普通です。
+ユーザーをリソースとみなす場合、id=1のユーザーを参照するということは、/users/1というURLに対してGETリクエストを発行するということを意味します。
+ここでshowというアクションの種類は、暗黙のリクエストになります。
+RailsのREST機能が有効になっていると、GETリクエストは自動的にshowアクションとして扱われます。
+
+2.2.1で説明したとおり、id=1のユーザーにアクセスするためのページのURIは/users/1となります。
+ただし、現時点ではこのURLを使ってもエラーになります (図 7.4)。
+
+
+#.....................
+images/figures/profile_routing_error_4th_edition
+  ==> profile_routing_error_4th_edition.png
+図 7.4: /users/1にアクセスした時のエラーログ
+#.....................
+
+/users/1 のURLを有効にするために、routesファイル (config/routes.rb)に次の1行を追加します。
+
+resources :users
+作成したコードをリスト 7.3に示します。
+
+##..............................
+リスト 7.3: Usersリソースをroutesファイルに追加する
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root 'static_pages#home'
+  get  '/help',    to: 'static_pages#help'
+  get  '/about',   to: 'static_pages#about'
+  get  '/contact', to: 'static_pages#contact'
+  get  '/signup',  to: 'users#new'
+  resources :users
+end
+#..............................
+
+今の短期的な目的はWebページ上にユーザーを表示することではありますが、resources :usersという行は、ユーザー情報を表示するURL (/users/1) を追加するためだけのものではありません。
+サンプルアプリケーションにこの１行を追加すると、ユーザーのURLを生成するための多数の名前付きルート (5.3.3) と共に、RESTfulなUsersリソースで必要となるすべてのアクションが利用できるようになるのです6。
+この行に対応するURLやアクション、名前付きルートは表 7.1のようになります (表 2.2との違いを比較してみてください)。
+次の3つの章に渡って、表 7.1の他の項目も利用して、Usersリソースを完全にRESTfulなリソースにするために必要なアクションをすべて作成する予定です。
+
+HTTPリクエスト	URL	アクション	名前付きルート	用途
+GET	/users	index	users_path	すべてのユーザーを一覧するページ
+GET	/users/1	show	user_path(user)	特定のユーザーを表示するページ
+GET	/users/new	new	new_user_path	ユーザーを新規作成するページ (ユーザー登録)
+POST	/users	create	users_path	ユーザーを作成するアクション
+GET	/users/1/edit	edit	edit_user_path(user)	id=1のユーザーを編集するページ
+PATCH	/users/1	update	user_path(user)	ユーザーを更新するアクション
+DELETE	/users/1	destroy	user_path(user)	ユーザーを削除するアクション
+表 7.1: リスト 7.3のUsersリソースが提供するRESTfulなルート
+リスト 7.3のコードを使うことで、ルーティングが有効になります。
+ただし、ルーティング先のページはまだありません (図 7.5)。
+この問題を解決するために、7.1.4で最小限のプロフィールページを作成する予定です。
+
+
+#.....................
+images/figures/user_show_unknown_action_3rd_edition
+  ==> user_show_unknown_action_3rd_edition.png
+図 7.5: /users/1 のルーティングは有効だがページがない状態
+#.....................
+
+ユーザーを表示するために、標準的なRailsの場所を使うことにします。
+Railsにおける標準的な場所とは、app/views/users/show.html.erbを指します。
+ただし、リスト 5.38でジェネレータを使ったときとは異なり (new.html.erbビューを作成したときと異なり)、今回はジェネレータを使っていないので、このshow.html.erbファイルは手動で作成する必要があります。
+したがって、app/views/users/show.html.erbファイルを手動で作成し7、リスト 7.4の内容を貼り付けてください。
+
+##..............................
+リスト 7.4: ユーザー情報を表示するための仮のビュー
+#...............................
+app/views/users/show.html.erb
+ <%= @user.name %>, <%= @user.email %>
+#..............................
+
+このビューでは埋め込みRubyを使ってユーザー名とメールアドレスを表示しています。
+インスタンス変数@userがあることを前提としています。
+もちろん、ユーザー表示ページの最終的な状態はこれとは大きく異なりますし、このメールアドレスがこのまま一般に公開されるようなこともありません。
+
+ユーザー表示ビューが正常に動作するためには、Usersコントローラ内のshowアクションに対応する@user変数を定義する必要があります。
+ご想像のとおり、ここではUserモデルのfindメソッド (6.1.4) を使ってデータベースからユーザーを取り出します。
+リスト 7.5のように書き換えてください。
+
+##..............................
+リスト 7.5: Usersコントローラのshowアクション
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def show
+    @user = User.find(params[:id])
+  end
+
+  def new
+  end
+end
+#..............................
+
+ユーザーのid読み出しにはparamsを使いました。
+Usersコントローラにリクエストが正常に送信されると、params[:id]の部分はユーザーidの1に置き換わります。
+つまり、この箇所は6.1.4で学んだfindメソッドの User.find(1)と同じになります。
+(技術的な補足: params[:id]は文字列型の "1" ですが、findメソッドでは自動的に整数型に変換されます)。
+
+ユーザーのビューとアクションが定義されたので、/users/1 は完全に動作するようになりました (図 7.6)。
+このとき、もしbcrypt gemを追加してからまだ一度もRailsサーバを再起動させていない場合は、ここで再起動してみてください (コラム 1.1)。
+動作したら /users/1 にアクセスし、デバッグ情報からparams[:id]の値を確認できることを確認してください (図 7.6)。
+
+---
+action: show
+controller: users
+id: '1'
+このid: ’1’は /users/:id から取得した値です。
+この値を使って
+
+User.find(params[:id])
+上のコードでid=1のユーザーを検索できる、といった仕組みになっているのです (リスト 7.5)。
+
+
+#.....................
+images/figures/user_show_3rd_edition
+  ==> user_show_3rd_edition.png
+図 7.6: Usersリソース追加後のユーザー表示ページ
+#.....................
+
+演習
+埋め込みRubyを使って、マジックカラム (created_atとupdated_at) の値をshowページに表示してみましょう (リスト 7.4)。
+埋め込みRubyを使って、Time.nowの結果をshowページに表示してみましょう。
+ページを更新すると、その結果はどう変わっていますか? 確認してみてください。
+
+#-----------------------------------------------------
+[__ 7.1.3 ] debuggerメソッド
+#-----------------------------------------------------
+
+7.1.2、アプリケーションの振る舞いを理解するためにdebugメソッドが役に立つことを学びました。
+しかし、もっと直接的にデバッグする方法もあります。
+それがbyebug gemによるdebuggerメソッドです (リスト 3.2)。
+どういう風にデバッグできるようになるのか、debuggerメソッドを実際にアプリケーションに差し込んで確かめてみましょう (リスト 7.6)。
+
+##..............................
+リスト 7.6: debuggerをUsersコントローラに差し込む
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def show
+    @user = User.find(params[:id])
+    debugger
+  end
+
+  def new
+  end
+end
+#..............................
+
+debuggerメソッドを差し込んだら、ブラウザから /users/1 にアクセスし、Railsサーバーを立ち上げたターミナルを見てみましょう。
+byebugプロンプトが表示されているはずです。
+
+(byebug)
+このプロンプトではRailsコンソールのようにコマンドを呼び出すことができて、アプリケーションのdebuggerが呼び出された瞬間の状態を確認することができます。
+
+(byebug) @user.name
+"Example User"
+(byebug) @user.email
+"example@railstutorial.org"
+(byebug) params[:id]
+"1"
+なお、Ctrl-Dを押すとプロンプトから抜け出すことができます。
+また、デバッグが終わったらshowアクション内のdebuggerの行を削除してしまいましょう (リスト 7.7)。
+
+##..............................
+リスト 7.7: debuggerをUsersコントローラーから取り外す
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def show
+    @user = User.find(params[:id])
+  end
+
+  def new
+  end
+end
+#..............................
+
+今後Railsアプリケーションの中でよく分からない挙動があったら、上のようにdebuggerを差し込んで調べてみましょう。
+トラブルが起こっていそうなコードの近くに差し込むのがコツです。
+byebug gemを使ってシステムの状態を調査することは、アプリケーション内のエラーを追跡したりデバッグするときに非常に強力なツールになります。
+
+演習
+showアクションの中にdebuggerを差し込み (リスト 7.6)、ブラウザから /users/1 にアクセスしてみましょう。
+その後コンソールに移り、putsメソッドを使ってparamsハッシュの中身をYAML形式で表示してみましょう。
+ヒント: 7.1.1.1の演習を参考にしてください。
+その演習ではdebugメソッドで表示したデバッグ情報を、どのようにしてYAML形式で表示していたでしょうか?
+newアクションの中にdebuggerを差し込み、/users/new にアクセスしてみましょう。
+@userの内容はどのようになっているでしょうか? 確認してみてください。
+
+#-----------------------------------------------------
+[__ 7.1.4 ] Gravatar画像とサイドバー
+#-----------------------------------------------------
+
+前節で基本的なユーザーページの定義は終わりましたので、今度は各ユーザーのプロフィール写真のあたりをもう少し肉付けし、サイドバーも作り始めましょう。
+ここではGravatar (Globally Recognized AVATAR) をプロフィールに導入してみましょう8 (訳注: Gravatarアカウントを作成する必要はありません)。
+Gravatarは無料のサービスで、プロフィール写真をアップロードして、指定したメールアドレスと関連付けることができます。
+その結果、 Gravatarはプロフィール写真をアップロードするときの面倒な作業や写真が欠けるトラブル、また、画像の置き場所の悩みを解決します。
+というのも、ユーザーのメールアドレスを組み込んだGravatar専用の画像パスを構成するだけで、対応するGravatarの画像が自動的に表示されるからです (カスタム画像を扱う方法については13.4で扱います)。
+
+ここではリスト 7.8のように、gravatar_forヘルパーメソッドを使ってGravatarの画像を利用できるようにします。
+
+##..............................
+リスト 7.8: ユーザー表示ビューに名前とGravatarを表示する
+#...............................
+app/views/users/show.html.erb
+ <% provide(:title, @user.name) %>
+<h1>
+  <%= gravatar_for @user %>
+  <%= @user.name %>
+</h1>
+#..............................
+
+デフォルトでは、ヘルパーファイルで定義されているメソッドは自動的にすべてのビューで利用できます。
+ここでは、利便性を考えてgravatar_forをUsersコントローラに関連付けられているヘルパーファイルに置くことにしましょう。
+Gravatarのホームページにも書かれているように、GravatarのURLはユーザーのメールアドレスをMD5という仕組みでハッシュ化しています。
+Rubyでは、Digestライブラリのhexdigestメソッドを使うと、MD5のハッシュ化が実現できます。
+
+>> email = "MHARTL@example.COM"
+>> Digest::MD5::hexdigest(email.downcase)
+=> "1fda4469bcbec3badf5418269ffc5968"
+メールアドレスは大文字と小文字を区別しませんが (6.2.4)、MD5ハッシュでは大文字と小文字が区別されるので、Rubyのdowncaseメソッドを使ってhexdigestの引数を小文字に変換しています。
+(本チュートリアルでは、リスト 6.32のコールバック処理で小文字変換されたメールアドレスを利用しているため、ここで小文字変換を入れなくても結果は同じです。
+ただし、将来gravatar_forメソッドが別の場所から呼びだされる可能性を考えると、ここで小文字変換を入れることには意義があります。
+) gravatar_forヘルパーを組み込んだ結果をリスト 7.9に示しました。
+
+##..............................
+リスト 7.9: gravatar_forヘルパーメソッドを定義する
+#...............................
+app/helpers/users_helper.rb
+ module UsersHelper
+
+  # 引数で与えられたユーザーのGravatar画像を返す
+  def gravatar_for(user)
+    gravatar_id = Digest::MD5::hexdigest(user.email.downcase)
+    gravatar_url = "https://secure.gravatar.com/avatar/#{gravatar_id}"
+    image_tag(gravatar_url, alt: user.name, class: "gravatar")
+  end
+end
+#..............................
+
+リスト 7.9のコードは、Gravatarの画像タグにgravatarクラスとユーザー名のaltテキストを追加したものを返します (altテキストを追加しておくと、視覚障害のあるユーザーがスクリーンリーダーを使うときにも役に立ちます)。
+
+プロフィールページは図 7.7のようになります。
+ここにはデフォルトのGravatar画像が表示されていますが、これはデフォルトのメールアドレスuser@example.comが本当のメールアドレスではないためです。
+(ちなみにexample.comというドメイン名は、例題として使うために用意された特別なドメインとなっています)
+
+
+#.....................
+images/figures/profile_with_gravatar_3rd_edition
+  ==> profile_with_gravatar_3rd_edition.png
+図 7.7: ユーザー表示ページにGravatarのデフォルト画像が表示されている
+#.....................
+
+アプリケーションでGravatarを利用できるようにするために、まずはupdate_attributes (6.1.5) を使ってデータベース上のユーザー情報 (メールアドレス) を更新してみます。
+
+$ rails console
+>> user = User.first
+>> user.update_attributes(name: "Example User",
+?>                        email: "example@railstutorial.org",
+?>                        password: "foobar",
+?>                        password_confirmation: "foobar")
+=> true
+ここではユーザーのメールアドレスに example@railstutorial.org を使いました。
+Gravatar上でこのメールアドレスとRailsチュートリアルのロゴを既に紐付けてあるので、上のように更新すると次の図 7.8のようになります。
+
+
+#.....................
+images/figures/profile_custom_gravatar_3rd_edition
+  ==> profile_custom_gravatar_3rd_edition.png
+図 7.8: ユーザー表示ページにGravatarのカスタム画像が表示されている
+#.....................
+
+図 7.1のモックアップに近づけるために、ユーザーのサイドバーの最初のバージョンを作りましょう。
+ここではasideタグを使って実装します。
+このタグはサイドバーなどの補完コンテンツの表示に使われますが、単独で表示することもできます。
+rowクラスとcol-md-4クラスも追加しておきます。
+これらのクラスはBootstrapの一部です。
+ユーザー表示ページを変更した結果をリスト 7.10に示します。
+
+##..............................
+リスト 7.10: ユーザーのshowビューにサイドバーを追加する
+#...............................
+app/views/users/show.html.erb
+ <% provide(:title, @user.name) %>
+<div class="row">
+  <aside class="col-md-4">
+    <section class="user_info">
+      <h1>
+        <%= gravatar_for @user %>
+        <%= @user.name %>
+      </h1>
+    </section>
+  </aside>
+</div>
+#..............................
+
+HTML要素とCSSクラスを配置したことにより、プロフィールページ (とサイドバーとGravatar) にSCSSでリスト 7.11のようにスタイルを与えることができるようになりました9 (テーブルCSSのルールが入れ子になっていますが、これができるのはAsset PipelineでSassエンジンが使われている場合に限られます) 。
+ページの変更の結果を図 7.9に示します。
+
+##..............................
+リスト 7.11: SCSSを使ってサイドバーなどのユーザー表示ページにスタイルを与える
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* sidebar */
+
+aside {
+  section.user_info {
+    margin-top: 20px;
+  }
+  section {
+    padding: 10px 0;
+    margin-top: 20px;
+    &:first-child {
+      border: 0;
+      padding-top: 0;
+    }
+    span {
+      display: block;
+      margin-bottom: 3px;
+      line-height: 1;
+    }
+    h1 {
+      font-size: 1.4em;
+      text-align: left;
+      letter-spacing: -1px;
+      margin-bottom: 3px;
+      margin-top: 0px;
+    }
+  }
+}
+
+.gravatar {
+  float: left;
+  margin-right: 10px;
+}
+
+.gravatar_edit {
+  margin-top: 15px;
+}
+#..............................
+
+
+#.....................
+images/figures/user_show_sidebar_css_3rd_edition
+  ==> user_show_sidebar_css_3rd_edition.png
+図 7.9: showページにサイドバーとCSSを追加する
+#.....................
+
+演習
+(任意) Gravatar上にアカウントを作成し、あなたのメールアドレスと適当な画像を紐付けてみてください。
+メールアドレスをMD5ハッシュ化して、紐付けた画像がちゃんと表示されるかどうか試してみましょう。
+7.1.4で定義したgravatar_forヘルパーをリスト 7.12のように変更して、sizeをオプション引数として受け取れるようにしてみましょう。
+うまく変更できると、gravatar_for user, size: 50といった呼び出し方ができるようになります。
+重要: この改善したヘルパーは10.3.1で実際に使います。
+忘れずに実装しておきましょう。
+オプション引数は今でもRubyコミュニティで一般的に使われていますが、Ruby 2.0から導入された新機能「キーワード引数 (Keyword Arguments)」でも実現することができます。
+先ほど変更したリスト 7.12を、リスト 7.13のように置き換えてもうまく動くことを確認してみましょう。
+この２つの実装方法はどういった違いがあるのでしょうか? 考えてみてください。
+##..............................
+リスト 7.12: gravatar_forヘルパーにオプション引数を追加する
+#...............................
+app/helpers/users_helper.rb
+ module UsersHelper
+
+  # 引数で与えられたユーザーのGravatar画像を返す
+  def gravatar_for(user, options = { size: 80 })
+    gravatar_id = Digest::MD5::hexdigest(user.email.downcase)
+    size = options[:size]
+    gravatar_url = "https://secure.gravatar.com/avatar/#{gravatar_id}?s=#{size}"
+    image_tag(gravatar_url, alt: user.name, class: "gravatar")
+  end
+end
+#..............................
+
+##..............................
+リスト 7.13: gravatar_forヘルパーにキーワード引数を追加する
+#...............................
+app/helpers/users_helper.rb
+ module UsersHelper
+
+  # 引数で与えられたユーザーのGravatar画像を返す
+  def gravatar_for(user, size: 80)
+    gravatar_id = Digest::MD5::hexdigest(user.email.downcase)
+    gravatar_url = "https://secure.gravatar.com/avatar/#{gravatar_id}?s=#{size}"
+    image_tag(gravatar_url, alt: user.name, class: "gravatar")
+  end
+end
+#..............................
+
+
+#-----------------------------
+[_ 7.2 ] ユーザー登録フォーム
+#-----------------------------
+
+ここまででユーザープロフィールページがひとまず動作するようになりましたので、今度はユーザー登録フォームを作成しましょう。
+図 5.11 (図 7.10にも再録) に示したとおり、ユーザー登録ページはまだ空白のままなので、このままではユーザー登録できません。
+この節の目標は、このみっともないページを改造して図 7.11のモックアップのようなページに変えることです。
+
+
+#.....................
+images/figures/new_signup_page_3rd_edition
+  ==> new_signup_page_3rd_edition.png
+図 7.10: 現状のユーザー登録ページ /signup
+#.....................
+
+
+#.....................
+images/figures/signup_mockup_bootstrap
+  ==> signup_mockup_bootstrap.png
+図 7.11: ユーザー登録ページのモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 7.2.1 ] form_forを使用する
+#-----------------------------------------------------
+
+ユーザー登録ページで重要な点は、ユーザー登録に欠かせない情報を入力するためのformです。
+Railsでform_forヘルパーメソッドを使います。
+このメソッドはActive Recordのオブジェクトを取り込み、そのオブジェクトの属性を使ってフォームを構築します。
+
+ユーザー登録ページ /signup のルーティングは、Usersコントローラーのnewアクションに既に紐付けられていることを思い出してください (リスト 5.43)。
+したがって、次のステップは、 form_forの引数で必要となるUserオブジェクトを作成することになります。
+必要となる@user変数の定義は、次のリスト 7.14のようになります。
+
+##..............................
+リスト 7.14: newアクションに@user変数を追加する
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def show
+    @user = User.find(params[:id])
+  end
+
+  def new
+    @user = User.new
+  end
+end
+#..............................
+
+フォームそのものはリスト 7.15で示します。
+7.2.2で詳しく触れますが、まずはリスト 7.16のSCSSで見栄えを整えてみましょう。
+box_sizingミックスインをリスト 7.2から再利用していることに注目してください。
+これらのCSSルールが一度適用されると、ユーザー登録ページは図 7.12のようになります。
+
+##..............................
+リスト 7.15: 新規ユーザーのためのユーザー登録フォーム
+#...............................
+app/views/users/new.html.erb
+ <% provide(:title, 'Sign up') %>
+<h1>Sign up</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user) do |f| %>
+      <%= f.label :name %>
+      <%= f.text_field :name %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation %>
+
+      <%= f.submit "Create my account", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+##..............................
+リスト 7.16: ユーザー登録フォームのCSS
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* forms */
+
+input, textarea, select, .uneditable-input {
+  border: 1px solid #bbb;
+  width: 100%;
+  margin-bottom: 15px;
+  @include box_sizing;
+}
+
+input {
+  height: auto !important;
+}
+#..............................
+
+
+#.....................
+images/figures/signup_form_3rd_edition
+  ==> signup_form_3rd_edition.png
+図 7.12: ユーザー登録フォーム
+#.....................
+
+演習
+試しに、リスト 7.15にある:nameを:nomeに置き換えてみましょう。
+どんなエラーメッセージが表示されるようになりますか?
+試しに、ブロックの変数fをすべてfoobarに置き換えてみて、結果が変わらないことを確認してみてください。
+確かに結果は変わりませんが、変数名をfoobarとするのはあまり良い変更ではなさそうですね。
+その理由について考えてみてください。
+
+#-----------------------------------------------------
+[__ 7.2.2 ] フォームHTML
+#-----------------------------------------------------
+
+リスト 7.15で定義したフォームを理解するために、小さなコードに分けて考えてみましょう。
+まずは、埋め込みRubyが使われているform_forからendまでの外側の構造を読み解いていきます。
+
+<%= form_for(@user) do |f| %>
+  .
+  .
+  .
+<% end %>
+doキーワードは、 form_forが1つの変数を持つブロックを取ることを表します。
+この変数fは “form” のfです。
+
+通常、Railsヘルパーを使っている場合、実装の詳細について知っておく必要はありません。
+ただしfというオブジェクトが何をするのかは知っておく必要があります。
+このfオブジェクトは、HTMLフォーム要素 (テキストフィールド、ラジオボタン、パスワードフィールドなど) に対応するメソッドが呼び出されると、@userの属性を設定するために特別に設計されたHTMLを返します。
+つまり、次のコードを実行すると、
+
+<%= f.label :name %>
+<%= f.text_field :name %>
+Userモデルのname属性を設定する、ラベル付きテキストフィールド要素を作成するのに必要なHTMLを作成します。
+
+生成されたフォームのHTMLを見たい場合は、ブラウザ上で表示画面を右クリックし、出てきたポップアップ項目の中から [ソースを表示] といった項目をクリックしてください。
+WebページのHTMLソースはリスト 7.17のようになります。
+HTMLソースの中の、フォームを形成するHTML構造に注目してみましょう。
+
+##..............................
+リスト 7.17: 図 7.12のフォームのHTMLソース
+#...............................
+<form accept-charset="UTF-8" action="/users" class="new_user"
+      id="new_user" method="post">
+  <input name="utf8" type="hidden" value="&#x2713;" />
+  <input name="authenticity_token" type="hidden"
+         value="NNb6+J/j46LcrgYUC60wQ2titMuJQ5lLqyAbnbAUkdo=" />
+  <label for="user_name">Name</label>
+  <input id="user_name" name="user[name]" type="text" />
+
+  <label for="user_email">Email</label>
+  <input id="user_email" name="user[email]" type="email" />
+
+  <label for="user_password">Password</label>
+  <input id="user_password" name="user[password]"
+         type="password" />
+
+  <label for="user_password_confirmation">Confirmation</label>
+  <input id="user_password_confirmation"
+         name="user[password_confirmation]" type="password" />
+
+  <input class="btn btn-primary" name="commit" type="submit"
+         value="Create my account" />
+</form>
+#..............................
+
+まずはこのHTMLソースの内部構造について説明します。
+リスト 7.15とリスト 7.17をじっくり見比べてみると、次の埋め込みRubyは、
+
+<%= f.label :name %>
+<%= f.text_field :name %>
+このようなHTMLを生成していることがわかります。
+
+<label for="user_name">Name</label>
+<input id="user_name" name="user[name]" type="text" />
+また、次の埋め込みRubyは
+
+<%= f.label :email %>
+<%= f.email_field :email %>
+このようなHTMLを生成していることもわかります。
+
+<label for="user_email">Email</label>
+<input id="user_email" name="user[email]" type="email" />
+同様にして次のコードは、
+
+<%= f.label :password %>
+<%= f.password_field :password %>
+こういったHTMLを生成しています。
+
+<label for="user_password">Password</label>
+<input id="user_password" name="user[password]" type="password" />
+次の図 7.13に示すように、テキストフィールド (type="text"とtype="email") では内容をそのまま表示していますが、パスワードフィールド (type="password") ではセキュリティ上の目的のために文字が隠蔽されています (図 7.13)。
+(emailフィールドとtextフィールドは同じように見えますが、細かな点が違います。
+例えばtype="email"となっている場合、モバイル端末から入力フォームをタップすると、メールアドレスに最適化された特別なキーボードが表示されるようになります。
+)
+
+
+#.....................
+images/figures/filled_in_form_bootstrap_3rd_edition
+  ==> filled_in_form_bootstrap_3rd_edition.png
+図 7.13: textフィールドとpasswordフィールドに文字を入力した状態
+#.....................
+
+7.4でも説明しますが、ユーザーの作成で重要なのはinputごとにある特殊なname属性です。
+
+<input id="user_name" name="user[name]" - - - />
+.
+.
+.
+<input id="user_password" name="user[password]" - - - />
+Railsはnameの値を使って、初期化したハッシュを (params変数経由で) 構成します。
+このハッシュは、入力された値に基づいてユーザーを作成するときに使われます (詳しくは7.3で説明)。
+
+次に重要な要素は、formタグ自身です。
+Railsはformタグを作成するときに@userオブジェクトを使います。
+すべてのRubyオブジェクトは自分のクラスを知っている (4.4.1) ので、Railsは@userのクラスがUserであることを認識します。
+また、@userは新しいユーザーなので、 Railsはpostメソッドを使ってフォームを構築すべきだと判断します。
+なお、新しいオブジェクトを作成するために必要なHTTPリクエストはPOSTなので、このメソッドはRESTfulアーキテクチャとして正しいリクエストになります (コラム 3.2)。
+
+<form action="/users" class="new_user" id="new_user" method="post">
+このとき、上のclassとid属性はアーキテクチャとしては基本的に無関係です。
+ここで重要な属性は、action="/users"とmethod="post"の２つだけです。
+この2つの属性では、/users に対してHTTPのPOSTリクエスト送信する、といった指示をしています
+
+ところで、formタグの内側で次のようなHTMLが生成されていたことにもお気付きでしょうか。
+
+<input name="utf8" type="hidden" value="&#x2713;" />
+<input name="authenticity_token" type="hidden"
+       value="NNb6+J/j46LcrgYUC60wQ2titMuJQ5lLqyAbnbAUkdo=" />
+このコードはブラウザ上では何も表示しませんが、Railsの内部で使われる特別なコードです。
+したがって、どういった意図で生成されたのかは、現時点ではまだ理解しなくても大丈夫です (コラム 1.1)。
+簡潔にまとめると、Unicode文字の「&#x2713; (チェックマーク ✓)」を使ってブラウザが正しい文字コードを送信できるようにしたり、 Cross-Site Request Forgery (CSRF) と呼ばれる攻撃を阻止するために信頼できるトークンを含めたりしています10。
+
+演習
+Learn Enough HTML to Be DangerousではHTMLをすべて手動で書き起こしていますが、なぜformタグを使わなかったのでしょうか? 理由を考えてみてください。
+
+#-----------------------------
+[_ 7.3 ] ユーザー登録失敗
+#-----------------------------
+
+図 7.12ではフォームのHTMLがどうなっているかを簡単に説明しました (リスト 7.17参照) が、フォームを理解するにはユーザー登録の失敗のときが最も参考になります。
+この節では、無効なデータ送信を受け付けるユーザー登録フォームを作成し、ユーザー登録フォームを更新してエラーの一覧を表示します。
+このモックアップを図 7.14に示します。
+
+
+#.....................
+images/figures/signup_failure_mockup_bootstrap
+  ==> signup_failure_mockup_bootstrap.png
+図 7.14: ユーザー登録が失敗したときのモックアップ。
+
+#.....................
+
+
+#-----------------------------------------------------
+[__ 7.3.1 ] 正しいフォーム
+#-----------------------------------------------------
+
+7.1.2で、resources :usersをroutes.rbファイルに追加すると (リスト 7.3) 自動的にRailsアプリケーションが表 7.1のRESTful URI に応答するようになったことを思い出してください。
+特に、/usersへのPOSTリクエストはcreateアクションに送られます。
+私たちはここで、createアクションでフォーム送信を受け取り、User.newを使って新しいユーザーオブジェクトを作成し、ユーザーを保存 (または保存に失敗) し、再度の送信用のユーザー登録ページを表示するという方法で機能を実装しようと思います。
+まずはユーザー登録フォームのコードを見直してみましょう。
+
+<form action="/users" class="new_user" id="new_user" method="post">
+7.2.2で説明したように、このHTMLはPOSTリクエストを/usersというURLに送信します。
+
+ユーザー登録フォームを動かすために、まずリスト 7.18のようにコードを追加するところから始めます。
+このリストでは、5.1.3の「パーシャル」のところでも使ったrender メソッドを再度使いまわしています。
+render はコントローラのアクションの中でも正常に動作します。
+ここで、以前に説明したif-else分岐構造を思い出してください。
+この文を使って、保存が成功したかどうかに応じて@user.saveの値がtrueまたはfalse (6.1.3) になるときに、それぞれ成功時の処理と失敗時の処理を場合分けすることができます。
+
+##..............................
+リスト 7.18: ユーザー登録の失敗に対応できるcreateアクション
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+
+  def show
+    @user = User.find(params[:id])
+  end
+
+  def new
+    @user = User.new
+  end
+
+  def create
+#..............................
+
+    @user = User.new(params[:user])    # 実装は終わっていないことに注意!
+    if @user.save
+      # 保存の成功をここで扱う。
+    else
+      render 'new'
+    end
+  end
+end
+コメントにもあるように、上のコードはまだ実装が完了していませんので注意してください。
+しかし実装の出発点としてはこれで十分です。
+なお、最終的な実装は7.3.2で完了します。
+
+リスト 7.18のコードの動作を理解するもっともよい方法は、実際に無効なユーザー登録データを送信 (submit)してみることです。
+送信してみると、結果は図 7.15のようになります。
+なお、そのときのデバッグ情報は図 7.16のとおりです。
+
+
+#.....................
+images/figures/signup_failure_4th_edition
+  ==> signup_failure_4th_edition.png
+図 7.15: ユーザー登録失敗
+#.....................
+
+
+#.....................
+images/figures/signup_failure_debug_4th_edition
+  ==> signup_failure_debug_4th_edition.png
+図 7.16: ユーザー登録失敗時のデバッグ情報
+#.....................
+
+Railsが送信を扱う方法をより深く理解するために、デバッグ情報のうちパラメーターハッシュのuserの部分を詳しく見てみましょう (図 7.16)。
+
+"user" => { "name" => "Foo Bar",
+            "email" => "foo@invalid",
+            "password" => "[FILTERED]",
+            "password_confirmation" => "[FILTERED]"
+          }
+このハッシュはUsersコントローラにparamsとして渡されます。
+7.1.2で説明したとおり、このparamsハッシュには各リクエストの情報が含まれています。
+ユーザー登録情報の送信の場合、paramsには複数のハッシュに対するハッシュ (hash-of-hashes: 入れ子になったハッシュ) が含まれます (なお、4.3.3ではhash-of-hashesの説明とともに、コンソールセッションで使うためにあえてparamsという名前の変数を導入しました)。
+上のデバッグ情報では、フォーム送信の結果が、送信された値に対応する属性とともにuserハッシュに保存されています。
+このハッシュのキーが、inputタグにあったname属性の値になります (リスト 7.17)。
+例えば次のように、
+
+<input id="user_email" name="user[email]" type="email" />
+"user[email]"という値は、userハッシュの:emailキーの値と一致します。
+
+ハッシュのキーはデバッグ情報では文字列となっていますが、Railsは文字列ではなく、params[:user]のように「シンボル」としてUsersコントローラに渡している点に注意してください。
+この性質により、4.4.5やリスト 7.18などで見てきたように、このハッシュはUser.newの引数で必要となるデータと完全に一致します。
+つまり、これまで見てきた次のようなコード (マスアサインメントと呼びます) は、
+
+@user = User.new(params[:user])
+実際にはこのようなコードとほぼ同じである、ということです。
+
+@user = User.new(name: "Foo Bar", email: "foo@invalid",
+                 password: "foo", password_confirmation: "bar")
+ただし、昔のバージョンのRailsでは、次のコードでも動きましたが、
+
+@user = User.new(params[:user])
+実は、悪意のあるユーザーによってアプリケーションのデータベースが書き換えられないように慎重な対策をとる必要があり、しかも、その対策が別のエラーを引き起こす危険性 (マスアサインメント脆弱性) もありました。
+そこでRails 4.0以降では、上のコードをエラー (上の図 7.15および図 7.16を参照) とすることでセキュリティを高め、また、Strong Parameters と呼ばれるテクニックで対策することを標準としました。
+
+
+#-----------------------------------------------------
+[__ 7.3.2 ] Strong Parameters
+#-----------------------------------------------------
+
+4.4.5で、マスアサインメントについて簡単に説明しました。
+これは、次のように値のハッシュを使ってRubyの変数を初期化するものです。
+
+@user = User.new(params[:user])    # 実装は終わっていないことに注意!
+リスト 7.18のコメントと、上の再録コメントでも重ねて指摘しているように、この実装は最終形ではありません。
+その理由は、paramsハッシュ全体を初期化するという行為はセキュリティ上、極めて危険だからです。
+これは、ユーザーが送信したデータをまるごとUser.newに渡していることになります。
+ここで、Userモデルにadmin属性というものがあるとしましょう。
+この属性は、Webサイトの管理者であるかどうかを示します (この属性を実装するのは10.4.1になってからです)。
+admin=’1’という値をparams[:user]の一部に紛れ込ませて渡してしまえば、この属性をtrueにすることができます。
+これはcurlなどのコマンドを使えば簡単に実現できます。
+paramsハッシュがまるごとUser.newに渡されてしまうと、どのユーザーでもadmin=’1’をWebリクエストに紛れ込ませるだけでWebサイトの管理者権限を奪い取ることができてしまいます。
+
+以前のバージョンのRailsでは、モデル層でattr_accessibleメソッドを使うことで上のような危険を防止していましたが、Rails 4.0ではコントローラ層でStrong Parametersというテクニックを使うことが推奨されています。
+Strong Parametersを使うことで、必須のパラメータと許可されたパラメータを指定することができます。
+さらに、上のようにparamsハッシュをまるごと渡すとエラーが発生するので、Railsはデフォルトでマスアサインメントの脆弱性から守られるようになりました。
+
+この場合、paramsハッシュでは:user属性を必須とし、名前、メールアドレス、パスワード、パスワードの確認の属性をそれぞれ許可し、それ以外を許可しないようにしたいと考えています。
+これを行うには、次のように記述します。
+
+params.require(:user).permit(:name, :email, :password, :password_confirmation)
+このコードの戻り値は、paramsハッシュのバージョンと、許可された属性です (:user属性がない場合はエラーになります)。
+
+これらのパラメータを使いやすくするために、user_paramsという外部メソッドを使うのが慣習になっています。
+このメソッドは適切に初期化したハッシュを返し、params[:user]の代わりとして使われます。
+
+@user = User.new(user_params)
+このuser_paramsメソッドはUsersコントローラの内部でのみ実行され、Web経由で外部ユーザーにさらされる必要はないため、リスト 7.19に示すようにRubyのprivateキーワードを使って外部から使えないようにします (privateキーワードの詳細については 9.1で説明します)。
+
+##..............................
+リスト 7.19: createアクションでStrong Parametersを使う
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      # 保存の成功をここで扱う。
+    else
+      render 'new'
+    end
+  end
+
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+end
+ちなみに、privateキーワード以降のコードを強調するために、user_paramsのインデントを1段深くしてあります。
+(経験的にはこれは賢い慣習だと思います。
+というのも、クラス内に多数のメソッドがある場合、privateメソッドの場所が簡単に見つかるからです。
+これにより、インデントが無い場合と比べて、どこからprivateになるのか困惑することがなくなります。
+)
+
+#..............................
+
+この時点で、(送信ボタンを押してもエラーが出ないという意味で) ユーザー登録フォームは動くようになります。
+ただし図 7.17が示すように、(開発者用のデバッグ領域を除いて) 間違った送信をしても何もフィードバックが返ってきていません。
+これはユーザーが困惑する原因となります。
+また、有効なユーザー情報を送信しても新しいユーザーが実際に作成されることもありません。
+前者の問題を7.3.3で、後者の問題を7.4でそれぞれ解決していきます。
+
+
+#.....................
+images/figures/invalid_submission_no_feedback_4th_ed
+  ==> invalid_submission_no_feedback_4th_ed.png
+図 7.17: 無効な情報をユーザー登録フォームで送信した結果
+#.....................
+
+演習
+/signup?admin=1 にアクセスし、paramsの中にadmin属性が含まれていることをデバッグ情報から確認してみましょう。
+
+#-----------------------------------------------------
+[__ 7.3.3 ] エラーメッセージ
+#-----------------------------------------------------
+
+ユーザー登録に失敗した場合の最後の手順として、問題が生じたためにユーザー登録が行われなかったということをユーザーにわかりやすく伝えるエラーメッセージを追加しましょう。
+Railsは、このようなメッセージをUserモデルの検証時に自動的に生成してくれます。
+例えばユーザー情報のメールアドレスが無効で、パスワードが短すぎる状態で保存しようとしたとします。
+
+$ rails console
+>> user = User.new(name: "Foo Bar", email: "foo@invalid",
+?>                 password: "dude", password_confirmation: "dude")
+>> user.save
+=> false
+>> user.errors.full_messages
+=> ["Email is invalid", "Password is too short (minimum is 6 characters)"]
+6.2.2で少し触れた errors.full_messagesオブジェクトは、 エラーメッセージの配列を持っています。
+
+上のコンソールセッションに示されているように、リスト 7.18で保存に失敗すると、@userオブジェクトに関連付けられたエラーメッセージの一覧が生成されます。
+このメッセージをブラウザで表示するには、ユーザーのnewページでエラーメッセージのパーシャル (partial) を出力します。
+このとき、form-controlというCSSクラスも一緒に追加することで、Bootstrapがうまく取り扱ってくれるようになります。
+変更の結果をリスト 7.20に示します。
+ここで使っているエラーメッセージのパーシャルは、あくまで試作品である点に注意してください。
+最終版は13.3.2を参照してください。
+
+##..............................
+リスト 7.20: ユーザー登録失敗時にエラーメッセージが表示されるようにする
+#...............................
+app/views/users/new.html.erb
+ <% provide(:title, 'Sign up') %>
+<h1>Sign up</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user) do |f| %>
+      <%= render 'shared/error_messages' %>
+
+      <%= f.label :name %>
+      <%= f.text_field :name, class: 'form-control' %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+      <%= f.submit "Create my account", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+ここでは、’shared/error_messages’というパーシャルをrender (描画) している点に注目してください。
+Rails全般の慣習として、複数のビューで使われるパーシャルは専用のディレクトリ「shared」によく置かれます (実際このパーシャルは10.1.1でも使います)。
+ただし、今はまだapp/views/sharedといったディレクトリは作っていないので、表 1.1で紹介したmkdirコマンドを使い、新しくディレクトリを作成する必要があります。
+
+$ mkdir app/views/shared
+また、いつものようにテキストエディタを使ってパーシャル (_error_messages.html.erb ) も作成します。
+パーシャルの内容はリスト 7.21のようになります。
+
+##..............................
+リスト 7.21: フォーム送信時にエラーメッセージを表示するためのパーシャル
+#...............................
+app/views/shared/_error_messages.html.erb
+ <% if @user.errors.any? %>
+  <div id="error_explanation">
+    <div class="alert alert-danger">
+      The form contains <%= pluralize(@user.errors.count, "error") %>.
+    </div>
+    <ul>
+    <% @user.errors.full_messages.each do |msg| %>
+      <li><%= msg %></li>
+    <% end %>
+    </ul>
+  </div>
+<% end %>
+#..............................
+
+パーシャルによって、RailsとRubyには、Railsエラーオブジェクト用の2つのメソッドを含む多くの成果物が導入されました。
+最初はcountメソッドを紹介します。
+これはエラーの数を返します。
+
+>> user.errors.count
+=> 2
+もう1つはany?メソッドです。
+これはempty?メソッドと互いに補完します。
+
+>> user.errors.empty?
+=> false
+>> user.errors.any?
+=> true
+4.2.3では文字列に対してempty?メソッドを使いましたが、Railsのエラーオブジェクトに対しても使えます。
+オブジェクトが空の場合はtrue、 それ以外の場合は falseを返します。
+any?メソッドはちょうどempty?と逆の動作で、要素が1つでもある場合はtrue、ない場合はfalseを返します。
+(なお、これらのcount、empty?、any?メソッドは、Rubyの配列に対してもそのまま使えます。
+これは13.2で応用する予定です。
+)
+
+さらに、pluralizeという英語専用のテキストヘルパーが新たに登場しています。
+これはhelperオブジェクトを通して、Railsコンソールからも試してみることができます。
+
+>> helper.pluralize(1, "error")
+=> "1 error"
+>> helper.pluralize(5, "error")
+=> "5 errors"
+pluralizeの最初の引数に整数が与えられると、それに基づいて2番目の引数の英単語を複数形に変更したものを返します。
+このメソッドの背後には強力なインフレクター (活用形生成) があり、不規則活用を含むさまざまな単語を複数形にすることができます。
+
+>> helper.pluralize(2, "woman")
+=> "2 women"
+>> helper.pluralize(3, "erratum")
+=> "3 errata"
+pluralizeを使うことで、コードは次のようになります。
+
+<%= pluralize(@user.errors.count, "error") %>
+このコードは、例えば "0 errors"、"1 error"、"2 errors" などのように、エラーの数に応じて活用された単語を返します。
+これにより、"1 errors" のような英語の文法に合わない文字列を避けることができます (これはWeb上でどうしようもないほどよく見かけるエラーです)。
+
+リスト 7.21には、エラーメッセージにスタイルを与えるためのCSS id error_explanationも含まれていることに注目してください (5.1.2のCSSでスタイルidに「#」記号を使ったことを思い出してください)。
+さらにRailsは、無効な内容で送信がされて元のページに戻されると、divで囲まれたエラー用のCSSクラスfield_with_errorsを返します。
+これらのラベルによって、リスト 7.22のようにエラーメッセージをSCSSで整形することができます。
+ここでは、Sassの@extend関数を使ってBootstrapのhas-errorというCSSクラスを適用してみます。
+
+##..............................
+リスト 7.22: エラーメッセージにスタイルを与えるためのCSS
+#...............................
+app/assets/stylesheets/custom.scss
+ .
+.
+.
+/* forms */
+.
+.
+.
+#error_explanation {
+  color: red;
+  ul {
+    color: red;
+    margin: 0 0 30px 0;
+  }
+}
+
+.field_with_errors {
+  @extend .has-error;
+  .form-control {
+    color: $state-danger-text;
+  }
+}
+#..............................
+
+リスト 7.20とリスト 7.21のコードと、SCSSのリスト 7.22を組み合わせることで、無効なユーザー登録情報を送信したときのエラーメッセージが分かりやすくなります (図 7.18)。
+これらのメッセージはモデルの検証時に生成されるので、メールアドレスのスタイルやパスワードの最小文字列などを変更すると、メッセージも自動的に変更されます。
+
+このとき、presence: trueによるバリデーションも、has_secure_passwordによるバリデーションも空のパスワード (nil) を検知してしまうため、ユーザー登録フォームで空のパスワードを入力すると2つの同じエラーメッセージが表示されてしまいます。
+もちろんこういった冗長なエラーメッセージを直接修正することも可能ですが、幸運にも今回の場合は、後ほど追加する allow_nil: true というオプションでこの問題は簡単に解決できます。
+
+
+#.....................
+images/figures/signup_error_messages_3rd_edition
+  ==> signup_error_messages_3rd_edition.png
+図 7.18: ユーザー登録失敗時のエラーメッセージ
+#.....................
+
+演習
+最小文字数を5に変更すると、エラーメッセージも自動的に更新されることを確かめてみましょう。
+未送信のユーザー登録フォーム (図 7.12) のURLと、送信済みのユーザー登録フォーム (図 7.18) のURLを比べてみましょう。
+なぜURLは違っているのでしょうか? 考えてみてください。
+
+#-----------------------------------------------------
+[__ 7.3.4 ] 失敗時のテスト
+#-----------------------------------------------------
+
+テスト機能を備えた強力なWebフレームワークがなかった時代では、開発者はフォームのテストを毎回手動で行う必要がありました。
+例えば、もし仮にユーザー登録ページを手動でテストしなければならないとしたら、ブラウザでそのページを表示し、有効なデータと無効なデータを交互に流しこみ、どちらの場合にもアプリケーションが正常に動作することを確認しなければならないでしょう。
+さらに、アプリケーションに変更が生じるたびに、まったく同じテストを繰り返さなければなりません。
+このプロセスは苦痛で、バグも見逃してしまいがちです。
+
+しかし幸運なことに、Railsではフォーム用のテストを書くことができ、こういったプロセスを自動化することができます。
+本項では、無効な送信をしたときの正しい振る舞いについてテストを書いていきます。
+7.4.4では同様の方法で、有効な送信をしたときの正しい振る舞いについてテストを書いていきます。
+
+まずは、新規ユーザー登録用の統合テストを生成するところから始めていきます。
+コントローラーの慣習である「リソース名は複数形」に因んで、統合テストのファイル名はusers_signupとします。
+
+$ rails generate integration_test users_signup
+      invoke  test_unit
+      create    test/integration/users_signup_test.rb
+(7.4.4で書くテストでも、ここで生成したファイルを使います)
+
+このテストでは、ユーザー登録ボタンを押したときに (ユーザー情報が無効であるために) ユーザーが作成されないことを確認します (なお、エラーメッセージに対するテストは7.3.4.1の演習に回します)。
+これを確認するために、ユーザーの数をカウント (count) します。
+このテストの背後で動作するcountメソッドは、Userを含むあらゆるActive Recordクラスで使うことができます。
+
+$ rails console
+>> User.count
+=> 1
+6.3.4の冒頭でデータベースをリセットしてあるので、現時点ではUser.countは1になっています (途中で試しにユーザーの追加や削除をしていたら値が違うかもしれませんが、気にする必要はありません)。
+5.3.4のように、 assert_selectを使って関連ページのHTML要素をテストしていきます。
+これにより、今後うっかり要素を変更してしまっても気付けるようになります。
+
+まずはgetメソッドを使ってユーザー登録ページにアクセスします。
+
+get signup_path
+フォーム送信をテストするためには、 users_pathに対してPOSTリクエストを送信する必要があります (表 7.1)。
+これは、次のようにpostメソッドを使って実現できます
+
+assert_no_difference 'User.count' do
+  post users_path, params: { user: { name:  "",
+                                     email: "user@invalid",
+                                     password:              "foo",
+                                     password_confirmation: "bar" } }
+end
+createアクションのUser.new (リスト 7.29)で期待されているデータを、params[:user]というハッシュにまとめています。
+なおRails 4.2以前では、paramsを暗黙的に省略しても (userハッシュのみでも) テストが通りました。
+Rails 5.0からは非推奨になり、paramsハッシュを明示的に含めることが推奨されています。
+
+また、assert_no_differenceメソッドのブロック内でpostを使い、メソッドの引数には’User.count’を与えています。
+これはassert_no_differenceのブロックを実行する前後で引数の値 (User.count) が変わらないことをテストしています。
+すなわちこのテストは、ユーザ数を覚えた後にデータを投稿してみて、ユーザ数が変わらないかどうかを検証するテストになります。
+したがって、次のコードと等価になります。
+
+before_count = User.count
+post users_path, ...
+after_count  = User.count
+assert_equal before_count, after_count
+これらのコードは等価ではありますが、assert_no_differenceを使う方が明瞭で、Rubyの慣習的にも正しいです。
+
+また、上のコードではgetメソッドを使っていないことにも注目してください。
+これは各メソッドに技術的な関連性がなく、ユーザー登録ページにアクセスしなくても、直接postメソッドを呼び出してユーザー登録ができることを意味しています。
+個人的には、コンセプトを明確にする意味とユーザー登録ページをダブルチェックする意味も兼ねて、 (実際の手順に倣って) 両方のメソッドを呼び出す方が好きです。
+
+上記のアイデアをコードに落とし込むと、リスト 7.23のようになります。
+なお、送信に失敗したときにnewアクションが再描画されるはずなので、assert_templateを使ったテストも含めていることに注意してください。
+エラーメッセージが正しく表示されているかどうかについては、演習として残しておきます (7.3.4.1)。
+
+##..............................
+リスト 7.23: 無効なユーザー登録に対するテストgreen
+#...............................
+test/integration/users_signup_test.rb
+ require 'test_helper'
+
+class UsersSignupTest < ActionDispatch::IntegrationTest
+
+  test "invalid signup information" do
+    get signup_path
+    assert_no_difference 'User.count' do
+      post users_path, params: { user: { name:  "",
+                                         email: "user@invalid",
+                                         password:              "foo",
+                                         password_confirmation: "bar" } }
+    end
+    assert_template 'users/new'
+  end
+end
+#..............................
+
+アプリケーションコードは既に実装済みなので、今回の統合テストも含め、全てのテストが greenになるはずです。
+
+##..............................
+リスト 7.24: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 7.20で実装したエラーメッセージに対するテストを書いてみてください。
+どのくらい細かくテストするかはお任せします。
+リスト 7.25にテンプレートを用意しておいたので、参考にしてください。
+未送信のユーザー登録フォームと送信直後のURLは、それぞれ /signup と /users になり、URLが異なっています。
+これは、リスト 5.43で追加した名前付きルートと、デフォルトのRESTfulなルーティング (リスト 7.3) を設定したことによって生じた差異です。
+リスト 7.26とリスト 7.27の内容を追加し、この問題を解決してみてください。
+うまくいけば、いずれのURLも /signup となるはずです。
+あれ、でもテストは greenのままになっていますね...、なぜでしょうか? (考えてみてください）
+リスト 7.25のpost部分を変更して、先ほどの演習課題で作った新しいURL (/signup) に合わせてみましょう。
+また、テストが greenのままになっている点も確認してください。
+リスト 7.27のフォームを以前の状態 (リスト 7.20) に戻してみて、テストがやはり greenになっていることを確認してください。
+これは問題です! なぜなら、現在postが送信されているURLは正しくないのですから。
+assert_selectを使ったテストをリスト 7.25に追加し、このバグを検知できるようにしてみましょう (テストを追加して redになれば成功です)。
+その後、変更後のフォーム (リスト 7.27) に戻してみて、テストが green になることを確認してみましょう。
+ヒント: フォームから送信してテストするのではなく、’form[action="/signup"]’という部分が存在するかどうかに着目してテストしてみましょう。
+##..............................
+リスト 7.25: エラーメッセージをテストするためのテンプレート
+#...............................
+test/integration/users_signup_test.rb
+ require 'test_helper'
+
+class UsersSignupTest < ActionDispatch::IntegrationTest
+
+  test "invalid signup information" do
+    get signup_path
+    assert_no_difference 'User.count' do
+      post users_path, params: { user: { name:  "",
+                                         email: "user@invalid",
+                                         password:              "foo",
+                                         password_confirmation: "bar" } }
+    end
+    assert_template 'users/new'
+    assert_select 'div#<CSS id for error explanation>'
+    assert_select 'div.<CSS class for field with error>'
+  end
+  .
+  .
+  .
+end
+#..............................
+
+##..............................
+リスト 7.26: ユーザー登録のルーティングにPOSTリクエストを追加する
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root 'static_pages#home'
+  get  '/help',    to: 'static_pages#help'
+  get  '/about',   to: 'static_pages#about'
+  get  '/contact', to: 'static_pages#contact'
+  get  '/signup',  to: 'users#new'
+  post '/signup',  to: 'users#create'
+  resources :users
+end
+#..............................
+
+##..............................
+リスト 7.27: /signup に対して送信する
+#...............................
+app/views/users/new.html.erb
+ <% provide(:title, 'Sign up') %>
+<h1>Sign up</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user, url: signup_path) do |f| %>
+      <%= render 'shared/error_messages' %>
+
+      <%= f.label :name %>
+      <%= f.text_field :name, class: 'form-control' %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+      <%= f.submit "Create my account", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+
+#-----------------------------
+[_ 7.4 ] ユーザー登録成功
+#-----------------------------
+
+無効なフォームの送信を扱えるようになったので、いよいよ新規ユーザーを実際にデータベースに保存できるようにし (もちろんフォームが有効な場合に)、ユーザー登録フォームを完成させましょう。
+まずは、ユーザーを保存できるようにします。
+保存に成功すると、ユーザー情報は自動的にデータベースに登録されます。
+次にブラウザの表示をリダイレクトして、登録されたユーザーのプロフィールを表示します。
+ついでにウェルカムメッセージも表示しましょう。
+モックアップを図 7.19に示します。
+保存に失敗した場合は、単に7.3で開発したとおりの動作が実行されます。
+
+
+#.....................
+images/figures/signup_success_mockup_bootstrap
+  ==> signup_success_mockup_bootstrap.png
+図 7.19: ユーザー登録に成功した画面のモックアップ
+#.....................
+
+
+#-----------------------------------------------------
+[__ 7.4.1 ] 登録フォームの完成
+#-----------------------------------------------------
+
+ユーザー登録フォームを完成させるために、リスト 7.19のコメントアウトされた部分にコードを書き、適切に動作するようにしましょう。
+現状では、環境によって些細な違いはあるものの、基本的には有効な情報で送信するとエラーが発生してしまいます (図 7.20)。
+これは、Railsはデフォルトのアクションに対応するビューを表示しようとしますが、createアクションに対応するビューのテンプレートがないことが原因です (図 7.21)。
+
+
+#.....................
+images/figures/valid_submission_error_4th_ed
+  ==> valid_submission_error_4th_ed.png
+図 7.20: 有効な情報でユーザー登録をしても元の画面に戻される
+#.....................
+
+
+#.....................
+images/figures/no_create_template_error
+  ==> no_create_template_error.png
+図 7.21: サーバーのログ情報からcreateテンプレートが原因だと分かる
+#.....................
+
+もちろん、createアクションに対応するテンプレートを作成することもできますが、Railsの一般的な慣習に倣って、ユーザー登録に成功した場合はページを描画せずに別のページにリダイレクト (Redirect) するようにしてみましょう。
+具体的には、新しく作成されたユーザーのプロフィールページにリダイレクトしてみようと思います (場合によってはルートURLにリダイレクトするのも１つの選択肢でしょう)。
+実際のアプリケーションコードをリスト 7.28に示します (redirect_to メソッドに注目してください)。
+
+##..............................
+リスト 7.28: 保存とリダイレクトを行う、userのcreateアクション
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      redirect_to @user
+    else
+      render 'new'
+    end
+  end
+
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+end
+#..............................
+
+ここで、
+
+redirect_to @user
+といった行がありますが、これは次のコードと等価になります。
+
+redirect_to user_url(@user)
+これはredirect_to @userというコードから (Railsエンジニアが) user_url(@user)といったコードを実行したいということを、Railsが推察してくれた結果になります。
+
+演習
+有効な情報を送信し、ユーザーが実際に作成されたことを、Railsコンソールを使って確認してみましょう。
+リスト 7.28を更新し、redirect_to user_url(@user)とredirect_to @userが同じ結果になることを確認してみましょう。
+
+#-----------------------------------------------------
+[__ 7.4.2 ] flash
+#-----------------------------------------------------
+
+リスト 7.28のコードによって、ユーザー登録フォームが実際に動くようになりました。
+これでブラウザから正しいユーザー情報を登録できるようになりましたが、その前にWebアプリケーションに常識的に備わっている機能を追加してみましょう。
+登録完了後に表示されるページにメッセージを表示し (この場合は新規ユーザーへのウェルカムメッセージ)、2度目以降にはそのページにメッセージを表示しないようにするというものです。
+
+Railsでこういった情報を表示するためには、flashという特殊な変数を使います。
+この変数はハッシュのように扱います。
+Railsの一般的な慣習に倣って、:successというキーには成功時のメッセージを代入するようにします (リスト 7.29)。
+
+##..............................
+リスト 7.29: ユーザー登録ページにフラッシュメッセージを追加する
+#...............................
+app/controllers/users_controller.rb
+ class UsersController < ApplicationController
+  .
+  .
+  .
+  def create
+    @user = User.new(user_params)
+    if @user.save
+      flash[:success] = "Welcome to the Sample App!"
+      redirect_to @user
+    else
+      render 'new'
+    end
+  end
+
+  private
+
+    def user_params
+      params.require(:user).permit(:name, :email, :password,
+                                   :password_confirmation)
+    end
+end
+#..............................
+
+flash変数に代入したメッセージは、リダイレクトした直後のページで表示できるようになります。
+今回はflash内に存在するキーがあるかを調べ、もしあればその値 (メッセージ) を全て表示するように、レイアウトを修正します。
+4.3.3の時にコンソール上で実行した例を思い出してみてください。
+そこではあえてflashと名付けた変数を使い、ハッシュの値を列挙しました (リスト 7.30)。
+
+##..............................
+リスト 7.30: コンソールでflashハッシュをイテレート (each do ... end) する
+#...............................
+$ rails console
+>> flash = { success: "It worked!", danger: "It failed." }
+=> {:success=>"It worked!", danger: "It failed."}
+>> flash.each do |key, value|
+?>   puts "#{key}"
+?>   puts "#{value}"
+>> end
+success
+It worked!
+danger
+It failed.
+#..............................
+
+上で示したパターンに則って、flash変数の内容をWebサイト全体にわたって表示できるようにすると、次のようなコードになります。
+
+<% flash.each do |message_type, message| %>
+  <div class="alert alert-<%= message_type %>"><%= message %></div>
+<% end %>
+なお、このコードではHTMLとERbが雑に混ざっていますが、これをキレイに整形する作業は演習として残しておきましょう (7.4.4.1)。
+さて、次の埋め込みRubyでは、
+
+alert-<%= message_type %>
+適用するCSSクラスをメッセージの種類によって変更するようにしています。
+これにより、例えば:successキーのメッセージが表示される場合、適用されるCSSクラスは次のようになります。
+
+alert-success
+このとき、:successキーはシンボルでしたが、テンプレート内に反映させる際に埋め込みRubyが自動的に"success"という文字列に変換している点に注意してください。
+この性質を利用することで、キーの内容によって異なったCSSクラスを適用させることができ、メッセージの種類によってスタイルを動的に変更させることができます。
+例えば、8.1.4ではflash[:danger]を使ってログインに失敗したことを表すメッセージを表示します11 (実際、既にalert-dangerというCSSクラスを使って、リスト 7.21のエラーメッセージのスタイルをdivタグで指定しています)。
+Bootstrap CSSは、このようなflashのクラス用に4つのスタイルを持っています (success、info、warning、danger)。
+また、本書のサンプルアプリケーションでは、これらの全てのスタイルを場合に応じて使っていきます (例えば11.2ではinfoを、8.1.4ではdangerを使います)。
+
+テンプレート内にflashのメッセージが差し込まれるので、次のようなコードは、
+
+flash[:success] = "Welcome to the Sample App!"
+最終的には次のようなHTMLになります。
+
+<div class="alert alert-success">Welcome to the Sample App!</div>
+先ほど説明した埋め込みRubyをレイアウトに埋め込んだ結果を、リスト 7.31に示します。
+
+##..............................
+リスト 7.31: flash変数の内容をWebサイトのレイアウトに追加する
+#...............................
+app/views/layouts/application.html.erb
+ <!DOCTYPE html>
+<html>
+  .
+  .
+  .
+  <body>
+    <%= render 'layouts/header' %>
+    <div class="container">
+      <% flash.each do |message_type, message| %>
+        <div class="alert alert-<%= message_type %>"><%= message %></div>
+      <% end %>
+      <%= yield %>
+      <%= render 'layouts/footer' %>
+      <%= debug(params) if Rails.env.development? %>
+    </div>
+    .
+    .
+    .
+  </body>
+</html>
+#..............................
+
+演習
+コンソールに移り、文字列内の式展開 (4.2.2) でシンボルを呼び出してみましょう。
+例えば"#{:success}"といったコードを実行すると、どんな値が返ってきますか? 確認してみてください。
+先ほどの演習で試した結果を参考に、リスト 7.30のflashはどのような結果になるか考えてみてください。
+
+#-----------------------------------------------------
+[__ 7.4.3 ] 実際のユーザー登録
+#-----------------------------------------------------
+
+ここまでの変更がうまくいったかどうか確認するため、実際にサンプルアプリケーションでユーザー登録を試してみましょう。
+ただし、図 7.20のようにこれまでに何度かフォームを使って実験を繰り返しているため、Usersコントローラのuser.saveの行が実行され、ユーザーの数が読者ごとに異なっている可能性があります。
+そこで、ユーザー登録を試す前に、次のコマンドを実行してデータベースの内容を一旦リセットしてしまいましょう。
+
+$ rails db:migrate:reset
+環境によっては、ここでWebサーバーを再起動する必要があります。
+必要に応じてCtrl-Cなどを使って、再起動しておいてください (コラム 1.1)。
+
+準備が整ったところで、早速最初のユーザーを登録してみましょう。
+今回は名前を「Rails Tutorial」、メールアドレスを「example@railstutorial.org」として登録してみます (図 7.22)。
+フォームから登録すると、ユーザー登録の成功を示すウェルカムメッセージが、successクラスのさわやかな緑色の背景で表示されます (図 7.23)。
+このクラスは、5.1.2で追加したのBootstrap CSSフレームワークによって準備されたものです。
+そしてユーザー表示ページを再度読み込むと、今度はフラッシュメッセージは表示されなくなります (図 7.24)。
+
+
+#.....................
+images/figures/first_signup
+  ==> first_signup.png
+図 7.22: ユーザー登録に必要な情報を入力する
+#.....................
+
+
+#.....................
+images/figures/signup_flash_3rd_edition
+  ==> signup_flash_3rd_edition.png
+図 7.23: ユーザー登録が成功し、フラッシュメッセージが表示される
+#.....................
+
+
+#.....................
+images/figures/signup_flash_reloaded_3rd_edition
+  ==> signup_flash_reloaded_3rd_edition.png
+図 7.24: ページを再読み込みすると、フラッシュメッセージが表示されなくなる
+#.....................
+
+演習
+Railsコンソールを使って、新しいユーザーが本当に作成されたのかもう一度チェックしてみましょう。
+結果は、リスト 7.32のようになるはずです。
+自分のメールアドレスでユーザー登録を試してみましょう。
+既にGravatarに登録している場合、適切な画像が表示されているか確認してみてください。
+##..............................
+リスト 7.32: データベースから新しく作られたユーザーを検索する
+#...............................
+$ rails console
+>> User.find_by(email: "example@railstutorial.org")
+=> #<User id: 1, name: "Rails Tutorial", email: "example@railstutorial.
+org", created_at: "2016-05-31 17:17:33", updated_at: "2016-05-31 17:17:33",
+password_digest: "$2a$10$8MaeHdnOhZvMk3GmFdmpPOeG6a7u7...">
+#..............................
+
+
+#-----------------------------------------------------
+[__ 7.4.4 ] 成功時のテスト
+#-----------------------------------------------------
+
+次に進む前に、ここで一旦、有効な送信に対するテストを書いてみます。
+これによって、アプリケーションの振る舞いを検証し、もし今後バグが埋め込まれたらそれを検知できるようになります。
+7.3.4で書いた無効な送信に対するテストと同様に、今回の目的はデータベースの中身が正しいかどうか検証することです。
+すなわち、有効な情報を送信して、ユーザーが作成されたことを確認します。
+リスト 7.23のときは次のようにテストを書きましたが、
+
+assert_no_difference 'User.count' do
+  post users_path, ...
+end
+今回はassert_differenceというメソッドを使ってテストを書きます。
+
+assert_difference 'User.count', 1 do
+  post users_path, ...
+end
+assert_no_differenceと同様に、このメソッドは第一引数に文字列 (’User.count’) を取り、assert_differenceブロック内の処理を実行する直前と、実行した直後のUser.countの値を比較します。
+第二引数はオプションですが、ここには比較した結果の差異 (今回の場合は1) を渡します。
+
+リスト 7.23と同じファイルにassert_differenceを使ったテストを追加すると、リスト 7.33のようになります。
+ここで、users_pathにPOSTリクエストを送信した後に、follow_redirect!というメソッドを使っていることに注目してください。
+このメソッドは、POSTリクエストを送信した結果を見て、指定されたリダイレクト先に移動するメソッドです。
+したがって、この行の直後では’users/show’テンプレートが表示されているはずです。
+ちなみに、ここでflashのテストも追加しておくとよいでしょう。
+これは演習として残しておきます (7.4.4.1)。
+
+##..............................
+リスト 7.33: 有効なユーザー登録に対するテストgreen
+#...............................
+test/integration/users_signup_test.rb
+ require 'test_helper'
+
+class UsersSignupTest < ActionDispatch::IntegrationTest
+  .
+  .
+  .
+  test "valid signup information" do
+    get signup_path
+    assert_difference 'User.count', 1 do
+      post users_path, params: { user: { name:  "Example User",
+                                         email: "user@example.com",
+                                         password:              "password",
+                                         password_confirmation: "password" } }
+    end
+    follow_redirect!
+    assert_template 'users/show'
+  end
+end
+#..............................
+
+リスト 7.33では、ユーザー登録に成功させた後に、どのテンプレートが表示されているのか検証していることにも注目してください。
+このテストを成功させるためには、Userのルーティング (リスト 7.3) とUserのshowアクション (リスト 7.5)、そしてshow.html.erbビュー (リスト 7.8) がそれぞれ正しく動いている必要があります。
+最後に、
+
+assert_template 'users/show'
+上のコードでは、ユーザープロフィールに関するほぼ全て (例えばページにアクセスしたらなんらかの理由でエラーが発生しないかどうかなど) をテストできていることに注目してください。
+この類のエンドツーエンドテストは、アプリケーションの重要な機能をカバーしてくれています。
+こういった理由が統合テストが便利だと呼ばれる所以です。
+
+演習
+7.4.2で実装したflashに対するテストを書いてみてください。
+どのくらい細かくテストするかはお任せします。
+リスト 7.34に最小限のテンプレートを用意しておいたので、参考にしてください (FILL_INの部分を適切なコードに置き換えると完成します)。
+ちなみに、テキストに対するテストは壊れやすいです。
+文量の少ないflashのキーであっても、それは同じです。
+筆者の場合、flashが空でないかをテストするだけの場合が多いです。
+本文中でも指摘しましたが、flash用のHTML (リスト 7.31) は読みにくいです。
+より読みやすくしたリスト 7.35のコードに変更してみましょう。
+変更が終わったらテストスイートを実行し、正常に動作することを確認してください。
+なお、このコードでは、Railsのcontent_tagというヘルパーを使っています。
+リスト 7.28のリダイレクトの行をコメントアウトすると、テストが失敗することを確認してみましょう。
+リスト 7.28で、@user.saveの部分をfalseに置き換えたとしましょう (バグを埋め込んでしまったと仮定してください)。
+このとき、assert_differenceのテストではどのようにしてこのバグを検知するでしょうか? テストコードを追って考えてみてください。
+##..............................
+リスト 7.34: flashをテストするためのテンプレート
+#...............................
+test/integration/users_signup_test.rb
+ require 'test_helper'
+  .
+  .
+  .
+  test "valid signup information" do
+    get signup_path
+    assert_difference 'User.count', 1 do
+      post users_path, params: { user: { name:  "Example User",
+                                         email: "user@example.com",
+                                         password:              "password",
+                                         password_confirmation: "password" } }
+    end
+    follow_redirect!
+    assert_template 'users/show'
+    assert_not flash.FILL_IN
+  end
+end
+#..............................
+
+##..............................
+リスト 7.35: content_tagを使ってレイアウトの中にflashを埋め込む
+#...............................
+app/views/layouts/application.html.erb
+ <!DOCTYPE html>
+<html>
+      .
+      .
+      .
+      <% flash.each do |message_type, message| %>
+        <%= content_tag(:div, message, class: "alert alert-#{message_type}") %>
+      <% end %>
+      .
+      .
+      .
+</html>
+#..............................
+
+
+#-----------------------------
+[_ 7.5 ] プロのデプロイ
+#-----------------------------
+
+ユーザー登録ページを動かすことができたので、このアプリケーションをデプロイして、本番環境でも動かせるようにしてみましょう。
+第3章からデプロイをして来ましたが、実際にデータを操作できるようにするデプロイは初めてです。
+そこで、この機会にプロレベルのデプロイ方法について説明していきます。
+具体的には、ユーザー登録をセキュアにするために、本番用のアプリケーションに重要な機能を追加していきます。
+その後、デフォルトのWebサーバを実際の世界で使われているWebサーバに置き換えていきます。
+
+デプロイの下準備として、まずはこの時点までの変更をmasterブランチにマージしておいてください。
+
+$ git add -A
+$ git commit -m "Finish user signup"
+$ git checkout master
+$ git merge sign-up
+
+#-----------------------------------------------------
+[__ 7.5.1 ] 本番環境でのSSL
+#-----------------------------------------------------
+
+本章で開発したユーザー登録フォームで送信すると、名前やメールアドレス、パスワードといったデータがネットワーク越しに流されていきます。
+実は、このようなネットワークに流れるデータは途中で捕捉できるため、扱いには注意が必要です。
+これはサンプルアプリケーションの本質的なセキュリティ上の欠陥です。
+そしてこれを修正するためにSecure Sockets Layer (SSL)を使います 12。
+これはローカルのサーバからネットワークに流れる前に、大事な情報を暗号化する技術です。
+今回はユーザー登録ページのためだけにSSLを導入しますが、これはWebサイト全体で適用できるため、第8章で実装するログイン機構をセキュアにしたり、9.1.で説明するセッションハイジャック (Session Hijacking) の脆弱性に対しても多くの利点を生み出します。
+
+SSLを有効化するのも簡単です。
+production.rbという本番環境の設定ファイルの1行を修正するだけで済みます。
+具体的には、configに「本番環境ではSSLを使うようにする」という設定をするだけです (リスト 7.36)。
+
+##..............................
+リスト 7.36: 本番環境ではSSLを使うように修正する
+#...............................
+config/environments/production.rb
+ Rails.application.configure do
+  .
+  .
+  .
+  # Force all access to the app over SSL, use Strict-Transport-Security,
+  # and use secure cookies.
+  config.force_ssl = true
+  .
+  .
+  .
+end
+#..............................
+
+次に、遠隔にあるサーバーのSSLをセットアップします。
+本番用のWebサイトでSSLを使えるようにするためには、ドメイン毎にSSL証明書を購入し、セットアップする必要があります。
+これには多くの作業が必要となりますが、幸運にもそういった作業をしなくても済む方法があります。
+それは、Heroku上でサンプルアプリケーションを動かし、HerokuのSSL証明書に便乗する方法です (訳注: ただし、この方法はHerokuのサブドメインでのみ有効です。
+独自ドメインを使う場合はSSL証明書を購入する必要があります)。
+結果として、7.5.2でアプリケーションのデプロイが終わると、自動的にSSLが有効化されているはずです。
+もしwww.example.comなどの独自ドメインでSSLを使いたい場合は、HerokuのSSLに関するドキュメント (英語) を参照してください。
+
+
+#-----------------------------------------------------
+[__ 7.5.2 ] 本番環境用のWebサーバー
+#-----------------------------------------------------
+
+SSLを導入したので、次はアプリケーションの設定をいじって、本番環境に適したWebサーバを使ってみましょう。
+Herokuのデフォルトでは、Rubyだけで実装されたWEBrickというWebサーバを使っています。
+WEBrickは簡単にセットアップできたり動せることが特長ですが、著しいトラフィックを扱うことには適していません。
+つまり、WEBrickは本番環境として適切なWebサーバではありません。
+よって、今回はWEBrickをPumaというWebサーバに置き換えてみます。
+Pumaは多数のリクエストを捌くことに適したWebサーバです。
+
+新しいWebサーバを追加するために、Heroku内のPumaドキュメント (英語) に従ってセットアップしていきます。
+
+最初のステップはpuma gemをGemfileに追加することなのですが、なんとRails 5では、Pumaはデフォルトの設定でも使えるようになっています (リスト 3.2)。
+したがって、最初のステップはスキップします (ちなみにRails 4.2以前ではconfig/puma.rbファイルを作成し、リスト 7.37のように設定していました)。
+次のステップは、HerokuのPumaのドキュメントに従って、設定を書き込んでいくことです (リスト 7.37)13。
+とはいえ今回はドキュメントのコードをそのまま引用しただけなので、中身は理解しなくても大丈夫です (コラム 1.1)。
+
+##..............................
+リスト 7.37: 本番環境のWebサーバー設定ファイル
+#...............................
+config/puma.rb
+ workers Integer(ENV['WEB_CONCURRENCY'] || 2)
+threads_count = Integer(ENV['RAILS_MAX_THREADS'] || 5)
+threads threads_count, threads_count
+
+preload_app!
+
+rackup      DefaultRackup
+port        ENV['PORT']     || 3000
+environment ENV['RACK_ENV'] || 'development'
+
+on_worker_boot do
+  # Worker specific setup for Rails 4.1+
+  # See: https://devcenter.heroku.com/articles/
+  # deploying-rails-applications-with-the-puma-web-server#on-worker-boot
+  ActiveRecord::Base.establish_connection
+end
+#..............................
+
+最後に、Procfileと呼ばれる、Heroku上でPumaのプロセスを走らせる設定ファイルを作成します (リスト 7.38)。
+なお、このProcfileはルートディレクトリ (Gemfileと同じディレクトリ) に置いておく必要があるので、ファイルの置き場所には注意してください。
+
+##..............................
+リスト 7.38: Pumaが使うようにProcfileで定義する
+#...............................
+./Procfile
+ web: bundle exec puma -C config/puma.rb
+#..............................
+
+
+#-----------------------------------------------------
+[__ 7.5.3 ] 本番環境へのデプロイ
+#-----------------------------------------------------
+
+これで、本番環境用のWebサーバの設定は完了しました。
+これらの変更をコミットし、デプロイしてみましょう14。
+
+$ rails test
+$ git add -A
+$ git commit -m "Use SSL and the Puma webserver in production"
+$ git push
+$ git push heroku
+$ heroku run rails db:migrate
+ユーザー登録フォームが無事に動いたら成功です。
+成功すると図 7.25のようになります。
+このとき、URLがhttps://に変わっていて、アドレスバーに鍵アイコンが表示されていることにも注目してください (図 7.25)。
+これは先ほど設定したSSLがうまく動いていることを示しています。
+
+
+#.....................
+images/figures/signup_in_production_4th_edition
+  ==> signup_in_production_4th_edition.png
+図 7.25: 本番環境 (Web上) で実際にユーザー登録をしてみる
+#.....................
+
+Rubyのバージョン番号
+ところで、Herokuのデプロイするとき、もしかしたら次のような警告メッセージを目にしたことがあるかもしれません。
+
+###### WARNING:
+       You have not declared a Ruby version in your Gemfile.
+       To set your Ruby version add this line to your Gemfile:
+       ruby '2.1.5'
+(これは「Rubyのバージョンを明示的に指定してください」というメッセージですが) 経験的には、本書のようなチュートリアルの段階では明示的に指定しない方がスムーズに進むことが多いので、この警告は現時点では無視してしまった方がよいでしょう。
+というのも、サンプルアプリケーションでRubyのバージョンを常に最新に保っておくと、多大な不都合に繋がりかねないからです15。
+また、本書のサンプルアプリケーションにおいては、ローカルで使っているバージョンと本番環境のバージョンが異なっていても、違いが生じることはほぼ無いでしょう。
+とは言うものの、次の点は頭の片隅に置いておいてください。
+それは、仕事でHerokuを使ったアプリケーションを動かす場合はGemfileでRubyのバージョンを明示しておいた方が賢明である、という点です。
+これによって開発環境と本番環境の互換性を最大限に高めることができるので、(バージョンの差異による誤作動やエラーなどが無くなり) オススメです。
+
+演習
+ブラウザから本番環境 (Heroku) にアクセスし、SSLの鍵マークがかかっているか、URLがhttpsになっているかどうかを確認してみましょう。
+本番環境でユーザーを作成してみましょう。
+Gravatarの画像は正しく表示されているでしょうか?
+
+#-----------------------------
+[_ 7.6 ] 最後に
+#-----------------------------
+
+ユーザー登録機能の実装は、私たちのサンプルアプリケーションにとって大きなマイルストーンでした。
+この時点でサンプルアプリケーションはかなり実用的になってきましたが、まだ重要な機能がいくつも残っています。
+第8章と第9章では、認証 (authentication) システムを導入し、ユーザーがログインとログアウトをできるようにします ([remember me] という発展的な機能も実装します)。
+続く第10章では、どのユーザーも自分のアカウント情報を更新できるようにし、Webサイトの管理者がユーザーを削除できるようにします。
+それにより、Usersリソースに表 7.1のRESTアクションがすべて実装されるようにします。
+
+
+#-----------------------------------------------------
+[__ 7.6.1 ] 本章のまとめ
+#-----------------------------------------------------
+
+debugメソッドを使うことで、役立つデバッグ情報を表示できる
+Sassのmixin機能を使うと、CSSのルールをまとめたり他の場所で再利用できるようになる
+Railsには標準で3つ環境が備わっており、それぞれ開発環境 (development)、テスト環境 (test)、本番環境 (production)と呼ぶ
+標準的なRESTfulなURLを通して、ユーザー情報をリソースとして扱えるようになった
+Gravatarを使うと、ユーザーのプロフィール画像を簡単に表示できるようになる
+form_forヘルパーは、Active Recordのオブジェクトに対応したフォームを生成する
+ユーザー登録に失敗した場合はnewビューを再描画するようにした。
+その際、Active Recordが自動的に検知したエラーメッセージを表示できるようにした
+flash変数を使うと、一時的なメッセージを表示できるようになる
+ユーザー登録に成功すると、データベース上にユーザーが追加、プロフィールページにリダイレクト、ウェルカムメッセージの表示といった順で処理が進む
+統合テストを使うことで送信フォームの振る舞いを検証したり、バグの発生を検知したりできる
+セキュアな通信と高いパフォーマンスを確保するために、本番環境ではSSLとPumaを導入した
+
+NOTE: 1 
+Mockingbirdはプロフィール写真のようなカスタム画像はサポートされていません。
+図 7.1ではGIMPを使って手動で画像を置きました。
+ ↑
+
+NOTE: 2 
+画像の引用元: http://www.flickr.com/photos/43803060@N00/24308857/ kaon 2014-06-16. Copyright © 2002 by Shaun Wallin. Creative Commons Attribution 2.0 Generic ↑
+
+NOTE: 3 
+実は、この3つ以外にもカスタムの環境を作成することができます。
+詳細については「環境を追加した場合のRailsCast (英語)」を参照してください。
+ ↑
+
+NOTE: 4 
+実際に表示される内容はRailsのバージョンごとに微妙に異なります。
+例えば Rails 5 からは、デバッグ情報の中には permitted というステータスに関する情報も含まれるようになりました (7.3.2)。
+こういった些細な差異については熟練の目で見ていきましょう (コラム 1.1)。
+ ↑
+
+NOTE: 5 
+Railsのdebug情報は YAML (一種の再帰的略語であり、“YAML Ain’t Markup Language” の略とされています) 形式で表示されます。
+YAMLは人間だけでなくコンピュータにとっても読みやすい形式です。
+ ↑
+
+NOTE: 6 
+この時点では、ルーティングは動作していますが、対応するページが動作しているとは限りません。
+例えば /users/1/edit がUsersコントローラのeditアクションに正常にルーティングされているとしても、editアクションが存在しなければ、このURLにアクセスしたときにエラーになります。
+ ↑
+
+NOTE: 7 
+例えば、touch app/views/users/show.html.erbコマンドを使ってみてください。
+ ↑
+
+NOTE: 8 
+ヒンズー教では、アバターは人間や動物の形をとって神が顕現したものと考えられています。
+これを拡大解釈して、特にTwitterなどのSNS界隈ではアバターという用語が、その人物そのものを表現するもの (かつその人の一部でもある) という意味で使われているようです。
+ ↑
+
+NOTE: 9 
+リスト 7.11では.gravatar_editというCSSクラスを追加しています。
+これは第10章でも使われます。
+ ↑
+
+NOTE: 10 
+動作の詳細を知りたい場合は、Stack OverflowのRails信頼性トークン関連の書き込み (英語) を参照してください。
+ ↑
+
+NOTE: 11 
+実際には、これに非常に近いflash.nowを使いますが、本当に必要になるまでは使わないようにしようかと思います。
+ ↑
+
+NOTE: 12 
+正確にはSSLからTLS (Transport Layer Security) と名称が変わりましたが、未だに「SSL」と呼ばれています。
+ ↑
+
+NOTE: 13 
+リスト 7.37では少しだけコードの見栄えを修正しています。
+これは標準的な1行80文字の制限に合わせるための変更です。
+ ↑
+
+NOTE: 14 
+本章ではデータモデルに対して変更を加えていなかったので、6.4のステップが済んでいれば、本当はHeroku上でマイグレーションを実行しなくても問題ないはずです。
+ただし、読者からトラブル報告がいくつか来ていたので、念のためheroku run rails db:migrateを実行するようにしています。
+ ↑
+
+NOTE: 15 
+例えば、 ローカルマシンでRuby 2.1.4がインストールできなくて何時間も過ごしてしまい、なんとか無事にインストールできたと思ったら、先日Ruby 2.1.5がリリースされたことに気付いたときなどです。
+ちなみにRuby 2.1.5のインストールにも苦戦しました。
+ ↑
+«前の章                   次の章»

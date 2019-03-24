@@ -1,0 +1,1421 @@
+第12章
+パスワードの再設定
+第11章でアカウントの有効化の実装が完了し、ユーザーのメールアドレスが本人のものである確信が得られるようになったので、これでパスワードを忘れた時のパスワードの再設定に取り組めるようになりました1。
+本章で見ていく内容のほとんどは、アカウント有効化で見てきた内容と似通っています。
+実際、いくつかの実装は第11章で見てきた流れと同じです。
+とはいえ、すべてが同じではなく、違う実装もあります。
+例えばアカウントの有効化のときと異なり、パスワードを再設定する場合はビューを1つ変更する必要があり、また、新しいフォームが新たに２つ (メールレイアウト用と新しいパスワードの送信用) 必要になります。
+
+コードを実際に書く前に、パスワード再設定の想定手順をモックアップ (=スクリーンショット画像を改変して作った模型) で確かめましょう。
+まず、サンプルアプリケーションのログインフォームに「forgot password」リンクを追加します (図 12.1)。
+この「forgot password」リンクをクリックするとフォームが表示され、そこにメールアドレスを入力してメールを送信すると、そのメールにパスワード再設定用のリンクが記載されています (図 12.2)。
+この再設定用のリンクをクリックすると、ユーザーのパスワードを再設定してよいか確認を求めるフォームが表示されます (図 12.3)。
+
+
+#.....................
+images/figures/login_forgot_password_mockup
+  ==> login_forgot_password_mockup.png
+図 12.1: 「forgot password」リンクのモックアップ
+#.....................
+
+
+#.....................
+images/figures/forgot_password_form_mockup
+  ==> forgot_password_form_mockup.png
+図 12.2: 「forgot password」フォームのモックアップ
+#.....................
+
+
+#.....................
+images/figures/reset_password_form_mockup
+  ==> reset_password_form_mockup.png
+図 12.3: パスワード再設定用フォームのモックアップ
+#.....................
+
+第11章を進めていれば、パスワード再設定用のメイラーが既に生成されているはずです (11.2のリスト 11.6)。
+本章では、ここで生成したメイラーにリソースとデータモデルを追加して、パスワードの再設定を実現していきます (12.1)。
+なお、実際の実装は12.3から進めていくことにします。
+
+アカウント有効化の際と似ていて、PasswordResetsリソースを作成して、再設定用のトークンとそれに対応するダイジェストを保存するのが今回の目的となります。
+全体の流れは次のとおりです。
+
+ユーザーがパスワードの再設定をリクエストすると、ユーザーが送信したメールアドレスをキーにしてデータベースからユーザーを見つける
+該当のメールアドレスがデータベースにある場合は、再設定用トークンとそれに対応するリセットダイジェストを生成する
+再設定用ダイジェストはデータベースに保存しておき、再設定用トークンはメールアドレスと一緒に、ユーザーに送信する有効化用メールのリンクに仕込んでおく
+ユーザーがメールのリンクをクリックしたら、メールアドレスをキーとしてユーザーを探し、データベース内に保存しておいた再設定用ダイジェストと比較する (トークンを認証する)
+認証に成功したら、パスワード変更用のフォームをユーザーに表示する
+
+#-----------------------------
+[_ 12.1 ] PasswordResetsリソース
+#-----------------------------
+
+セッション (8.1) やアカウント有効化 (第11章) のときと同様に、まずはPasswordResetsリソースのモデリングから始めてみましょう。
+前章と同様に、今回も新たなモデルは作らずに、代わりに必要なデータ (再設定用のダイジェストなど) をUserモデルに追加していく形で進めていきましょう。
+
+PasswordResetsもリソースとして扱っていきたいので、まずは標準的なRESTfulなURLを用意しましょう。
+有効化のときはeditアクションだけを取り扱いましたが、今回はパスワードを再設定するフォームが必要なので、ビューを描画するためのnewアクションとeditアクションが必要になります。
+また、それぞれのアクションに対応する作成用/更新用のアクションも最終的なRESTfulなルーティングには必要になります。
+
+上の変更を加える前に、いつものようにトピックブランチを作っておきましょう。
+
+$ git checkout -b password-reset
+
+#-----------------------------------------------------
+[__ 12.1.1 ] PasswordResetsコントローラ
+#-----------------------------------------------------
+
+準備が整ったところで、最初のステップとしてパスワード再設定用のコントローラを作ってみましょう。
+先程説明したように今回はビューも扱うので、newアクションとeditアクションも一緒に生成している点に注意してください。
+
+$ rails generate controller PasswordResets new edit --no-test-framework
+上のコマンドでは、テストを生成しないというオプションを指定していることにご注目ください。
+これはコントローラの単体テストをする代わりに、今回は11.3.3から統合テストでカバーしていくからです。
+
+また今回の実装では、新しいパスワードを再設定するためのフォーム (図 12.2) と、Userモデル内のパスワードを変更するためのフォーム (図 12.3) が必要になるので、new、create、edit、updateのルーティングも用意しましょう。
+この変更は、前回と同様にルーティングファイルのresources行で行います (リスト 12.1)。
+
+##..............................
+リスト 12.1: パスワード再設定用リソースを追加する
+#...............................
+config/routes.rb
+ Rails.application.routes.draw do
+  root   'static_pages#home'
+  get    '/help',    to: 'static_pages#help'
+  get    '/about',   to: 'static_pages#about'
+  get    '/contact', to: 'static_pages#contact'
+  get    '/signup',  to: 'users#new'
+  get    '/login',   to: 'sessions#new'
+  post   '/login',   to: 'sessions#create'
+  delete '/logout',  to: 'sessions#destroy'
+  resources :users
+  resources :account_activations, only: [:edit]
+  resources :password_resets,     only: [:new, :create, :edit, :update]
+end
+#..............................
+
+リスト 12.1のコードはRESTfulのルーティング (表 12.1) に従っています。
+例えば「forgot password」フォームへのリンク作成のときに、表 12.1にある名前付きルートを使っています (リスト 12.2と図 12.4参照)。
+
+new_password_reset_path
+HTTPリクエスト	URL	Action	名前付きルート
+GET	/password_resets/new	new	new_password_reset_path
+POST	/password_resets	create	password_resets_path
+GET	/password_resets/<token>/edit	edit	edit_password_reset_url(token)
+PATCH	/password_resets/<token>	update	password_reset_url(token)
+表 12.1: リスト 12.1のPasswordResetsリソースで提供されるRESTfulルーティング
+##..............................
+リスト 12.2: パスワード再設定画面へのリンクを追加する
+#...............................
+app/views/sessions/new.html.erb
+ <% provide(:title, "Log in") %>
+<h1>Log in</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(:session, url: login_path) do |f| %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= link_to "(forgot password)", new_password_reset_path %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :remember_me, class: "checkbox inline" do %>
+        <%= f.check_box :remember_me %>
+        <span>Remember me on this computer</span>
+      <% end %>
+
+      <%= f.submit "Log in", class: "btn btn-primary" %>
+    <% end %>
+
+    <p>New user? <%= link_to "Sign up now!", signup_path %></p>
+  </div>
+</div>
+#..............................
+
+
+#.....................
+images/figures/forgot_password_link
+  ==> forgot_password_link.png
+図 12.4: 「forgot password」リンクのあるログインページ
+#.....................
+
+演習
+この時点で、テストスイートが greenになっていることを確認してみましょう。
+表 12.1の名前付きルートでは、_pathではなく_urlを使うように記してあります。
+なぜでしょうか? 考えてみましょう。
+ヒント: アカウント有効化で行った演習 (11.1.1.1) と同じ理由です。
+
+#-----------------------------------------------------
+[__ 12.1.2 ] 新しいパスワードの設定
+#-----------------------------------------------------
+
+パスワード再設定のデータモデルも、アカウント有効化の場合と似ています (図 11.1)。
+記憶トークン (第9章) や有効化トークン (第11章) での実装パターンに倣って、パスワードの再設定でも、トークン用の仮想的な属性とそれに対応するダイジェストを用意していきます。
+もしトークンをハッシュ化せずに (つまり平文で) データベースに保存してしまうとすると、攻撃者によってデータベースからトークンを読み出されたとき、セキュリティ上の問題が生じます。
+つまり、攻撃者がユーザーのメールアドレスにパスワード再設定のリクエストを送信し、このメールと盗んだトークンを組み合わせて攻撃者がパスワード再設定リンクを開けば、アカウントを奪い取ることができてしまう、ということです。
+したがって、パスワードの再設定では必ずダイジェストを使うようにしてください。
+セキュリティ上の注意点はもう１つあります。
+それは再設定用のリンクはなるべく短時間 (数時間以内) で期限切れになるようにしなければなりません。
+そのために、再設定メールの送信時刻も記録する必要があります。
+以上の背景に基づいて、reset_digest属性とreset_sent_at属性をUserモデルに追加した結果が図 12.5になります。
+
+user_model_password_reset
+図 12.5: パスワード再設定用のカラムを追加したUserモデル
+#.....................
+
+次を実行して、マイグレーションに図 12.5の属性を追加します。
+
+$ rails generate migration add_reset_to_users reset_digest:string \
+> reset_sent_at:datetime
+上記の2行目にある>は改行を示すためにシェルが自動的に挿入する文字です。
+手動で入力しないよう、注意してください。
+入力できたら、いつものようにマイグレーションを実行しましょう。
+
+$ rails db:migrate
+新しいパスワード再設定の画面を作成するために、前回紹介した手法を使うことにします。
+つまり、新しいセッションを作成するためのログインフォーム (リスト 8.4) を使います。
+参考までにリスト 12.3に再掲したのでご覧ください。
+
+##..............................
+リスト 12.3: ログインフォームのコード (再掲)
+#...............................
+app/views/sessions/new.html.erb
+ <% provide(:title, "Log in") %>
+<h1>Log in</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(:session, url: login_path) do |f| %>
+
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :remember_me, class: "checkbox inline" do %>
+        <%= f.check_box :remember_me %>
+        <span>Remember me on this computer</span>
+      <% end %>
+
+      <%= f.submit "Log in", class: "btn btn-primary" %>
+    <% end %>
+
+    <p>New user? <%= link_to "Sign up now!", signup_path %></p>
+  </div>
+</div>
+#..............................
+
+新しいパスワード再設定フォームはリスト 12.3と多くの共通点がありますが、重要な違いとして、form_forで扱うリソースとURLが異なっている点と、パスワード属性が省略されている点が挙げられます。
+変更を反映した結果をリスト 12.4と図 12.6に示します。
+
+##..............................
+リスト 12.4: 新しいパスワード再設定画面ビュー
+#...............................
+app/views/password_resets/new.html.erb
+ <% provide(:title, "Forgot password") %>
+<h1>Forgot password</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(:password_reset, url: password_resets_path) do |f| %>
+      <%= f.label :email %>
+      <%= f.email_field :email, class: 'form-control' %>
+
+      <%= f.submit "Submit", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+
+#.....................
+images/figures/forgot_password_form
+  ==> forgot_password_form.png
+図 12.6: 「forgot password」フォーム
+#.....................
+
+演習
+リスト 12.4のform_forメソッドでは、なぜ@password_resetではなく:password_resetを使っているのでしょうか? 考えてみてください。
+
+#-----------------------------------------------------
+[__ 12.1.3 ] createアクションでパスワード再設定
+#-----------------------------------------------------
+
+図 12.6のフォームから送信を行なった後、メールアドレスをキーとしてユーザーをデータベースから見つけ、パスワード再設定用トークンと送信時のタイムスタンプでデータベースの属性を更新する必要があります。
+それに続いてルートURLにリダイレクトし、フラッシュメッセージをユーザーに表示します。
+送信が無効の場合は、ログイン (リスト 8.11) と同様にnewページを出力してflash.nowメッセージを表示します2。
+変更の結果をリスト 12.5に示します。
+
+##..............................
+リスト 12.5: パスワード再設定用のcreateアクション
+#...............................
+app/controllers/password_resets_controller.rb
+ class PasswordResetsController < ApplicationController
+
+  def new
+  end
+
+  def create
+    @user = User.find_by(email: params[:password_reset][:email].downcase)
+    if @user
+      @user.create_reset_digest
+      @user.send_password_reset_email
+      flash[:info] = "Email sent with password reset instructions"
+      redirect_to root_url
+    else
+      flash.now[:danger] = "Email address not found"
+      render 'new'
+    end
+  end
+
+  def edit
+  end
+end
+#..............................
+
+Userモデル内のコードは、before_createコールバック (リスト 11.3) 内で使われるcreate_activation_digestメソッドと似ています (リスト 12.6)。
+
+##..............................
+リスト 12.6: Userモデルにパスワード再設定用メソッドを追加する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token, :activation_token, :reset_token
+  before_save   :downcase_email
+  before_create :create_activation_digest
+  .
+  .
+  .
+  # アカウントを有効にする
+  def activate
+    update_attribute(:activated,    true)
+    update_attribute(:activated_at, Time.zone.now)
+  end
+
+  # 有効化用のメールを送信する
+  def send_activation_email
+    UserMailer.account_activation(self).deliver_now
+  end
+
+  # パスワード再設定の属性を設定する
+  def create_reset_digest
+    self.reset_token = User.new_token
+    update_attribute(:reset_digest,  User.digest(reset_token))
+    update_attribute(:reset_sent_at, Time.zone.now)
+  end
+
+  # パスワード再設定のメールを送信する
+  def send_password_reset_email
+    UserMailer.password_reset(self).deliver_now
+  end
+
+  private
+
+    # メールアドレスをすべて小文字にする
+    def downcase_email
+      self.email = email.downcase
+    end
+
+    # 有効化トークンとダイジェストを作成および代入する
+    def create_activation_digest
+      self.activation_token  = User.new_token
+      self.activation_digest = User.digest(activation_token)
+    end
+end
+#..............................
+
+図 12.7に示すように、この時点でのアプリケーションは、無効なメールアドレスを入力した場合に正常に動作します。
+正しいメールアドレスを送信した場合にもアプリケーションが正常に動作するためには、パスワード再設定のメイラーメソッドを定義する必要があります。
+
+
+#.....................
+images/figures/invalid_email_password_reset
+  ==> invalid_email_password_reset.png
+図 12.7: 「forgot password」フォームに無効なメールアドレスを入力した場合
+#.....................
+
+演習
+試しに有効なメールアドレスをフォームから送信してみましょう (図 12.6)。
+どんなエラーメッセージが表示されたでしょうか?
+コンソールに移り、先ほどの演習課題で送信した結果、(エラーと表示されてはいるものの) 該当するuserオブジェクトにはreset_digestとreset_sent_atがあることを確認してみましょう。
+また、それぞれの値はどのようになっていますか?
+
+#-----------------------------
+[_ 12.2 ] パスワード再設定のメール送信
+#-----------------------------
+
+12.1のPasswordResetsコントローラで、createアクションがほぼ動作するところまで持っていきました。
+残すところは、パスワード再設定に関するメールを送信する部分です。
+
+既に11.1をやっていれば、Userメイラー (app/mailers/user_mailer.rb) を生成したときに、デフォルトのpassword_resetメソッドもまとめて生成されているはずです。
+もし第11章を読み飛ばしていれば、リスト 11.6に記したコードを実行して、必要なファイルを生成してください (account_activationに関するメソッドは生成しなくても大丈夫です)。
+
+
+#-----------------------------------------------------
+[__ 12.2.1 ] パスワード再設定のメールとテンプレート
+#-----------------------------------------------------
+
+11.3.3では、UserメイラーにあるコードをUserモデルに移すリファクタリングを行いました。
+同様のリファクタリング作業を、パスワード再設定に対しても行っていきましょう (リスト 12.6)。
+
+UserMailer.password_reset(self).deliver_now
+上のコードの実装に必要なメソッドは、11.2で実装したアカウント有効化用メイラーメソッドとほぼ同じです。
+最初にUserメイラーにpassword_resetメソッドを作成し (リスト 12.7)、続いて、テキストメールのテンプレート (リスト 12.8) とHTMLメールのテンプレート (リスト 12.9) をそれぞれ定義します。
+
+##..............................
+リスト 12.7: パスワード再設定のリンクをメール送信する
+#...............................
+app/mailers/user_mailer.rb
+ class UserMailer < ApplicationMailer
+
+  def account_activation(user)
+    @user = user
+    mail to: user.email, subject: "Account activation"
+  end
+
+  def password_reset(user)
+    @user = user
+    mail to: user.email, subject: "Password reset"
+  end
+end
+#..............................
+
+##..............................
+リスト 12.8: パスワード再設定のテンプレート (テキスト)
+#...............................
+app/views/user_mailer/password_reset.text.erb
+ To reset your password click the link below:
+
+<%= edit_password_reset_url(@user.reset_token, email: @user.email) %>
+
+This link will expire in two hours.
+
+If you did not request your password to be reset, please ignore this email and
+your password will stay as it is.
+#..............................
+
+##..............................
+リスト 12.9: パスワード再設定のテンプレート (HTML)
+#...............................
+app/views/user_mailer/password_reset.html.erb
+ <h1>Password reset</h1>
+
+<p>To reset your password click the link below:</p>
+
+<%= link_to "Reset password", edit_password_reset_url(@user.reset_token,
+                                                      email: @user.email) %>
+
+<p>This link will expire in two hours.</p>
+
+<p>
+If you did not request your password to be reset, please ignore this email and
+your password will stay as it is.
+</p>
+#..............................
+
+アカウント有効化メールの場合 (11.2) と同様、Railsのメールプレビュー機能でパスワード再設定のメールをプレビューしましょう。
+そのためのコードはリスト 11.18と基本的にまったく同じです (リスト 12.10)。
+
+##..............................
+リスト 12.10: パスワード再設定のプレビューメソッド (完成)
+#...............................
+test/mailers/previews/user_mailer_preview.rb
+ # Preview all emails at http://localhost:3000/rails/mailers/user_mailer
+class UserMailerPreview < ActionMailer::Preview
+
+  # Preview this email at
+  # http://localhost:3000/rails/mailers/user_mailer/account_activation
+  def account_activation
+    user = User.first
+    user.activation_token = User.new_token
+    UserMailer.account_activation(user)
+  end
+
+  # Preview this email at
+  # http://localhost:3000/rails/mailers/user_mailer/password_reset
+  def password_reset
+    user = User.first
+    user.reset_token = User.new_token
+    UserMailer.password_reset(user)
+  end
+end
+#..............................
+
+リスト 12.10のコードで、HTMLメールとテキストメールをそれぞれプレビューできるようになります (図 12.8と図 12.9)。
+
+
+#.....................
+images/figures/password_reset_html_preview_4th_ed
+  ==> password_reset_html_preview_4th_ed.png
+図 12.8: パスワード再設定メールのプレビュー (HTMLバージョン)
+#.....................
+
+
+#.....................
+images/figures/password_reset_text_preview_4th_ed
+  ==> password_reset_text_preview_4th_ed.png
+図 12.9: パスワード再設定メールのプレビュー (テキストバージョン)
+#.....................
+
+リスト 12.7、リスト 12.8、リスト 12.9のコードを使うと、正しいメールアドレスを送信したときの画面は図 12.10のようになります。
+このメールはサーバーログではリスト 12.11のように表示されます。
+
+
+#.....................
+images/figures/valid_email_password_reset
+  ==> valid_email_password_reset.png
+図 12.10: 有効なメールアドレスを送信した場合
+#.....................
+
+##..............................
+リスト 12.11: サーバーログに表示されたパスワード再設定メールの例
+#...............................
+Sent mail to michael@michaelhartl.com (66.8ms)
+Date: Mon, 06 Jun 2016 22:00:41 +0000
+From: noreply@example.com
+To: michael@michaelhartl.com
+Message-ID: <8722b257d04576a@mhartl-rails-tutorial-953753.mail>
+Subject: Password reset
+Mime-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="--==_mimepart_5407babbe3505_8722b257d045617";
+ charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+
+----==_mimepart_5407babbe3505_8722b257d045617
+Content-Type: text/plain;
+ charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+To reset your password click the link below:
+
+https://rails-tutorial-mhartl.c9users.io/password_resets/3BdBrXe
+QZSWqFIDRN8cxHA/edit?email=michael%40michaelhartl.com
+
+This link will expire in two hours.
+
+If you did not request your password to be reset, please ignore
+this email and your password will stay as it is.
+----==_mimepart_5407babbe3505_8722b257d045617
+Content-Type: text/html;
+ charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+<h1>Password reset</h1>
+
+<p>To reset your password click the link below:</p>
+
+<a href="https://rails-tutorial-mhartl.c9users.io/
+password_resets/3BdBrXeQZSWqFIDRN8cxHA/
+edit?email=michael%40michaelhartl.com">Reset password</a>
+
+<p>This link will expire in two hours.</p>
+
+<p>
+If you did not request your password to be reset, please ignore
+this email and your password will stay as it is.
+</p>
+----==_mimepart_5407babbe3505_8722b257d045617--
+#..............................
+
+演習
+ブラウザから、送信メールのプレビューをしてみましょう。
+「Date」の欄にはどんな情報が表示されているでしょうか?
+パスワード再設定フォームから有効なメールアドレスを送信してみましょう。
+また、Railsサーバーのログを見て、生成された送信メールの内容を確認してみてください。
+コンソールに移り、先ほどの演習課題でパスワード再設定をしたUserオブジェクトを探してください。
+オブジェクトを見つけたら、そのオブジェクトが持つreset_digestとreset_sent_atの値を確認してみましょう。
+
+#-----------------------------------------------------
+[__ 12.2.2 ] 送信メールのテスト
+#-----------------------------------------------------
+
+アカウント有効化のテスト (リスト 11.20) と同様に、メイラーメソッドのテストを書いていきましょう (リスト 12.12)。
+
+##..............................
+リスト 12.12: パスワード再設定用メイラーメソッドのテストを追加する green
+#...............................
+test/mailers/user_mailer_test.rb
+ require 'test_helper'
+
+class UserMailerTest < ActionMailer::TestCase
+
+  test "account_activation" do
+    user = users(:michael)
+    user.activation_token = User.new_token
+    mail = UserMailer.account_activation(user)
+    assert_equal "Account activation", mail.subject
+    assert_equal [user.email], mail.to
+    assert_equal ["noreply@example.com"], mail.from
+    assert_match user.name,               mail.body.encoded
+    assert_match user.activation_token,   mail.body.encoded
+    assert_match CGI.escape(user.email),  mail.body.encoded
+  end
+
+  test "password_reset" do
+    user = users(:michael)
+    user.reset_token = User.new_token
+    mail = UserMailer.password_reset(user)
+    assert_equal "Password reset", mail.subject
+    assert_equal [user.email], mail.to
+    assert_equal ["noreply@example.com"], mail.from
+    assert_match user.reset_token,        mail.body.encoded
+    assert_match CGI.escape(user.email),  mail.body.encoded
+  end
+end
+#..............................
+
+これでテストスイートは greenになるはずです。
+
+##..............................
+リスト 12.13: green
+#...............................
+$ rails test
+#..............................
+
+演習
+メイラーのテストだけを実行してみてください。
+このテストは greenになっているでしょうか?
+リスト 12.12にある２つ目のCGI.escapeを削除すると、テストが redになることを確認してみましょう。
+
+#-----------------------------
+[_ 12.3 ] パスワードを再設定する
+#-----------------------------
+
+リスト 12.11で無事に送信メールを生成できたので、次はPasswordResetsコントローラのeditアクションの実装を進めていきましょう。
+また、11.3.3のときと同様に、統合テストを使ってうまく動作しているかのテストも行っていきます。
+
+
+#-----------------------------------------------------
+[__ 12.3.1 ] editアクションで再設定
+#-----------------------------------------------------
+
+リスト 12.11で見せたパスワード再設定の送信メールには、次のようなリンクが含まれているはずです。
+
+https://example.com/password_resets/3BdBrXeQZSWqFIDRN8cxHA/edit?email=fu%40bar.com
+このリンクを機能させるためには、パスワード再設定フォームを表示するビューが必要です。
+このビューはユーザーの編集フォーム (リスト 10.2) と似ていますが、今回はパスワード入力フィールドと確認用フィールドだけで十分です。
+
+ただし、今回の作業は少しだけ面倒な点があります。
+というのも、メールアドレスをキーとしてユーザーを検索するためには、editアクションとupdateアクションの両方でメールアドレスが必要になるからです。
+例のメールアドレス入りリンクのおかげで、editアクションでメールアドレスを取り出すことは問題ありません。
+しかしフォームを一度送信してしまうと、この情報は消えてしまいます。
+この値はどこに保持しておくのがよいのでしょうか。
+今回はこのメールアドレスを保持するため、隠しフィールドとしてページ内に保存する手法をとります。
+これにより、フォームから送信したときに、他の情報と一緒にメールアドレスが送信されるようになります。
+実際のコード (リスト 12.14) を見てみましょう。
+
+##..............................
+リスト 12.14: パスワード再設定のフォーム
+#...............................
+app/views/password_resets/edit.html.erb
+ <% provide(:title, 'Reset password') %>
+<h1>Reset password</h1>
+
+<div class="row">
+  <div class="col-md-6 col-md-offset-3">
+    <%= form_for(@user, url: password_reset_path(params[:id])) do |f| %>
+      <%= render 'shared/error_messages' %>
+
+      <%= hidden_field_tag :email, @user.email %>
+
+      <%= f.label :password %>
+      <%= f.password_field :password, class: 'form-control' %>
+
+      <%= f.label :password_confirmation, "Confirmation" %>
+      <%= f.password_field :password_confirmation, class: 'form-control' %>
+
+      <%= f.submit "Update password", class: "btn btn-primary" %>
+    <% end %>
+  </div>
+</div>
+#..............................
+
+リスト 12.14では、フォームタグヘルパーを使っている点にご注意ください。
+
+hidden_field_tag :email, @user.email
+これまでは次のようなコードを書いていましたが、今回は書き方が異なっています。
+
+f.hidden_field :email, @user.email
+これは再設定用のリンクをクリックすると、前者 (hidden_field_tag) ではメールアドレスがparams[:email]に保存されますが、後者ではparams[:user][:email] に保存されてしまうからです。
+
+今度は、このフォームを描画するためにPasswordResetsコントローラのeditアクション内で@userインスタンス変数を定義していきます。
+アカウント有効化 (リスト 11.31) の場合と同様、params[:email]のメールアドレスに対応するユーザーをこの変数に保存します。
+続いて、params[:id]の再設定用トークンと、リスト 11.26で抽象化したauthenticated?メソッドを使って、このユーザーが正当なユーザーである (ユーザーが存在する、有効化されている、認証済みである) ことを確認します。
+editアクションとupdateアクションのどちらの場合も正当な@userが存在する必要があるので、いくつかのbeforeフィルタを使って@userの検索とバリデーションを行います (リスト 12.15)。
+
+##..............................
+リスト 12.15: パスワード再設定のeditアクション
+#...............................
+app/controllers/password_resets_controller.rb
+ class PasswordResetsController < ApplicationController
+  before_action :get_user,   only: [:edit, :update]
+  before_action :valid_user, only: [:edit, :update]
+  .
+  .
+  .
+  def edit
+  end
+
+  private
+
+    def get_user
+      @user = User.find_by(email: params[:email])
+    end
+
+    # 正しいユーザーかどうか確認する
+    def valid_user
+      unless (@user && @user.activated? &&
+              @user.authenticated?(:reset, params[:id]))
+        redirect_to root_url
+      end
+    end
+end
+#..............................
+
+リスト 12.15では次のコードを使っています。
+
+authenticated?(:reset, params[:id])
+上のコードを下のコードと比べてみましょう。
+
+authenticated?(:remember, cookies[:remember_token])
+このコードは、リスト 11.28で使われたコードです。
+さらにもう１つ、
+
+authenticated?(:activation, params[:id])
+これはリスト 11.31で使ったコードです。
+以上のコードが表 11.1で示した認証メソッドであり、また、今回追加したコードですべて実装が完了したことになります。
+
+話を戻して、これでリスト 12.11のリンクを開いたときに、パスワード再設定のフォームが出力されるようになりました。
+実行結果は図 12.11のようになります。
+
+
+#.....................
+images/figures/password_reset_form
+  ==> password_reset_form.png
+図 12.11: パスワード再設定のフォーム
+#.....................
+
+演習
+12.2.1.1で示した手順に従って、Railsサーバーのログから送信メールを探し出し、そこに記されているリンクを見つけてください。
+そのリンクをブラウザから表示してみて、図 12.11のように表示されるか確かめてみましょう。
+先ほど表示したページから、実際に新しいパスワードを送信してみましょう。
+どのような結果になるでしょうか?
+
+#-----------------------------------------------------
+[__ 12.3.2 ] パスワードを更新する
+#-----------------------------------------------------
+
+AccountActivationsコントローラのeditアクションでは、ユーザーの有効化ステータスをfalseからtrueに変更しましたが、今回の場合はフォームから新しいパスワードを送信するようになっています。
+したがって、フォームからの送信に対応するupdateアクションが必要になります。
+このupdateアクションでは、次の４つのケースを考慮する必要があります。
+
+パスワード再設定の有効期限が切れていないか
+無効なパスワードであれば失敗させる (失敗した理由も表示する)
+新しいパスワードが空文字列になっていないか (ユーザー情報の編集ではOKだった)
+新しいパスワードが正しければ、更新する
+(1) と (2) と (4) はこれまでの知識で対応できそうですが、(3) はどのように対応すれば良いのかあまり明確ではなさそうです。
+とりあえず、上のケースを１つずつ対応していくことにしましょう。
+
+(1) については、editとupdateアクションに次のようなメソッドとbeforeフィルターを用意することで対応できそうです。
+
+before_action :check_expiration, only: [:edit, :update]    # (1) への対応案
+このcheck_expirationメソッドは、有効期限をチェックするPrivateメソッドとして定義します。
+
+# 期限切れかどうかを確認する
+def check_expiration
+  if @user.password_reset_expired?
+    flash[:danger] = "Password reset has expired."
+    redirect_to new_password_reset_url
+  end
+end
+上のcheck_expirationメソッドでは、期限切れかどうかを確認するインスタンスメソッド「password_reset_expired?」を使っています。
+この新しいメソッドについては後ほど説明することにします。
+今は上記の４つのケースについて先に考えていきましょう (ちなみに実装結果のまとめはリスト 12.16になります)。
+
+まず、上のbeforeフィルターで保護したupdateアクションを使うことで、(2) と (4) のケースに対応することができそうです。
+例えば (2) については、更新が失敗したときにeditのビューが再描画され、リスト 12.14のパーシャルにエラーメッセージが表示されるようにすれば解決できます。
+(4) については、更新が成功したときにパスワードを再設定し、あとはログインに成功したとき (リスト 8.25) と同様の処理を進めていけば問題なさそうです。
+
+今回の小難しい問題点は、パスワードが空文字だった場合の処理です。
+というのも、以前Userモデルを作っていたときに、パスワードが空でも良い (リスト 10.13のallow_nil) という実装をしたからです。
+したがって、このケースについては明示的にキャッチするコードを追加する必要があります3。
+これが、先ほど示した考慮すべき点の (3) に当たります。
+これを解決する方法として、今回は@userオブジェクトにエラーメッセージを追加する方法をとってみます。
+具体的には、次のようにerrors.addを使ってエラーメッセージを追加します。
+
+@user.errors.add(:password, :blank)
+このように書くと、パスワードが空だった時に空の文字列に対するデフォルトのメッセージを表示してくれるようになります。
+4
+
+以上の結果をまとめると、(1) のpassword_reset_expired?の実装を除き、すべてのケースに対応したupdateアクションが完成します (リスト 12.16)。
+
+##..............................
+リスト 12.16: パスワード再設定のupdateアクション
+#...............................
+app/controllers/password_resets_controller.rb
+ class PasswordResetsController < ApplicationController
+  before_action :get_user,         only: [:edit, :update]
+  before_action :valid_user,       only: [:edit, :update]
+#..............................
+
+  before_action :check_expiration, only: [:edit, :update]    # (1) への対応
+
+  def new
+  end
+
+  def create
+    @user = User.find_by(email: params[:password_reset][:email].downcase)
+    if @user
+      @user.create_reset_digest
+      @user.send_password_reset_email
+      flash[:info] = "Email sent with password reset instructions"
+      redirect_to root_url
+    else
+      flash.now[:danger] = "Email address not found"
+      render 'new'
+    end
+  end
+
+  def edit
+  end
+
+  def update
+    if params[:user][:password].empty?                  # (3) への対応
+      @user.errors.add(:password, :blank)
+      render 'edit'
+    elsif @user.update_attributes(user_params)          # (4) への対応
+      log_in @user
+      flash[:success] = "Password has been reset."
+      redirect_to @user
+    else
+      render 'edit'                                     # (2) への対応
+    end
+  end
+
+  private
+
+    def user_params
+      params.require(:user).permit(:password, :password_confirmation)
+    end
+
+    # beforeフィルタ
+
+    def get_user
+      @user = User.find_by(email: params[:email])
+    end
+
+    # 有効なユーザーかどうか確認する
+    def valid_user
+      unless (@user && @user.activated? &&
+              @user.authenticated?(:reset, params[:id]))
+        redirect_to root_url
+      end
+    end
+  
+    # トークンが期限切れかどうか確認する
+    def check_expiration
+      if @user.password_reset_expired?
+        flash[:danger] = "Password reset has expired."
+        redirect_to new_password_reset_url
+      end
+    end
+end
+(上のコードでは、7.3.2で実装したときと同様に、user_paramsメソッドを使ってpasswordとpassword_confirmation属性を精査している点に注意してください。)
+
+あとは、残しておいたリスト 12.16の実装だけです。
+今回は先回りして、始めからUserモデルに移譲する前提で次のようにコードを書いていました。
+
+@user.password_reset_expired?
+上のコードを動作させるために、password_reset_expired?メソッドをUserモデルで定義していきましょう。
+12.2.1を参考に、このメソッドではパスワード再設定の期限を設定して、2時間以上パスワードが再設定されなかった場合は期限切れとする処理を行います。
+これをRubyで表現すると次のようになります。
+
+reset_sent_at < 2.hours.ago
+上の < 記号を「〜より少ない」と読んでしまうと、「パスワード再設定メール送信時から経過した時間が、2時間より少ない場合」となってしまい、困惑してしまうので注意してください。
+ここで行っている処理は、「少ない」ではなく「早い」と捉えると理解しやすいです。
+つまり、< 記号を「〜より早い時刻」と読んでください。
+こうすると「パスワード再設定メールの送信時刻が、現在時刻より2時間以上前 (早い) の場合」となり、 期待どおりの条件となります。
+したがって、この条件が満たされるかどうかを確認するpassword_reset_expired?メソッドは、リスト 12.17のようになります (この比較の公式な証明を12.6に付録として追加しました)。
+
+##..............................
+リスト 12.17: Userモデルにパスワード再設定用メソッドを追加する
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  .
+  .
+  .
+  # パスワード再設定の期限が切れている場合はtrueを返す
+  def password_reset_expired?
+    reset_sent_at < 2.hours.ago
+  end
+
+  private
+    .
+    .
+    .
+end
+#..............................
+
+リスト 12.17のコードを使うと、リスト 12.16のupdateアクションが動作するようになります。
+送信が無効だった場合と有効だった場合の画面を、それぞれ図 12.12と図 12.13に示します (確認のために2時間も待っていられないので、テストにはもう１つ分岐を追加していますが、これは12.3.3.1の演習に回すことにします)。
+
+
+#.....................
+images/figures/password_reset_failure_4th_ed
+  ==> password_reset_failure_4th_ed.png
+図 12.12: パスワードの再設定が失敗した場合
+#.....................
+
+
+#.....................
+images/figures/password_reset_success_4th_ed
+  ==> password_reset_success_4th_ed.png
+図 12.13: パスワードの再設定が成功した場合
+#.....................
+
+演習
+12.2.1.1で得られたリンク (Railsサーバーのログから取得) をブラウザで表示し、passwordとconfirmationの文字列をわざと間違えて送信してみましょう。
+どんなエラーメッセージが表示されるでしょうか?
+コンソールに移り、パスワード再設定を送信したユーザーオブジェクトを見つけてください。
+見つかったら、そのオブジェクトのpassword_digestの値を取得してみましょう。
+次に、パスワード再設定フォームから有効なパスワードを入力し、送信してみましょう (図 12.13)。
+パスワードの再設定は成功したら、再度password_digestの値を取得し、先ほど取得した値と異なっていることを確認してみましょう。
+ヒント: 新しい値はuser.reloadを通して取得する必要があります。
+
+#-----------------------------------------------------
+[__ 12.3.3 ] パスワードの再設定をテストする
+#-----------------------------------------------------
+
+この項では、リスト 12.16の2つ (または3つ) の分岐、つまり送信に成功した場合と失敗した場合の統合テストを作成します (前述のとおり、3番目の分岐については12.3.3.1の演習に回します)。
+まずはパスワード再設定のテストファイルを生成しましょう。
+
+$ rails generate integration_test password_resets
+      invoke  test_unit
+      create    test/integration/password_resets_test.rb
+パスワード再設定をテストする手順は、アカウント有効化のテスト (リスト 11.33) と多くの共通点がありますが、テストの冒頭部分には次のような違いがあります。
+最初に「forgot password」フォームを表示して無効なメールアドレスを送信し、次はそのフォームで有効なメールアドレスを送信します。
+後者ではパスワード再設定用トークンが作成され、再設定用メールが送信されます。
+続いて、メールのリンクを開いて無効な情報を送信し、次にそのリンクから有効な情報を送信して、それぞれが期待どおりに動作することを確認します。
+作成したテストをリスト 12.18に示します。
+このテストはコードリーディングのよい練習台になりますので、みっちりお読みください。
+
+##..............................
+リスト 12.18: パスワード再設定の統合テスト
+#...............................
+test/integration/password_resets_test.rb
+ require 'test_helper'
+
+class PasswordResetsTest < ActionDispatch::IntegrationTest
+
+  def setup
+    ActionMailer::Base.deliveries.clear
+    @user = users(:michael)
+  end
+
+  test "password resets" do
+    get new_password_reset_path
+    assert_template 'password_resets/new'
+    # メールアドレスが無効
+    post password_resets_path, params: { password_reset: { email: "" } }
+    assert_not flash.empty?
+    assert_template 'password_resets/new'
+    # メールアドレスが有効
+    post password_resets_path,
+         params: { password_reset: { email: @user.email } }
+    assert_not_equal @user.reset_digest, @user.reload.reset_digest
+    assert_equal 1, ActionMailer::Base.deliveries.size
+    assert_not flash.empty?
+    assert_redirected_to root_url
+    # パスワード再設定フォームのテスト
+    user = assigns(:user)
+    # メールアドレスが無効
+    get edit_password_reset_path(user.reset_token, email: "")
+    assert_redirected_to root_url
+    # 無効なユーザー
+    user.toggle!(:activated)
+    get edit_password_reset_path(user.reset_token, email: user.email)
+    assert_redirected_to root_url
+    user.toggle!(:activated)
+    # メールアドレスが有効で、トークンが無効
+    get edit_password_reset_path('wrong token', email: user.email)
+    assert_redirected_to root_url
+    # メールアドレスもトークンも有効
+    get edit_password_reset_path(user.reset_token, email: user.email)
+    assert_template 'password_resets/edit'
+    assert_select "input[name=email][type=hidden][value=?]", user.email
+    # 無効なパスワードとパスワード確認
+    patch password_reset_path(user.reset_token),
+          params: { email: user.email,
+                    user: { password:              "foobaz",
+                            password_confirmation: "barquux" } }
+    assert_select 'div#error_explanation'
+    # パスワードが空
+    patch password_reset_path(user.reset_token),
+          params: { email: user.email,
+                    user: { password:              "",
+                            password_confirmation: "" } }
+    assert_select 'div#error_explanation'
+    # 有効なパスワードとパスワード確認
+    patch password_reset_path(user.reset_token),
+          params: { email: user.email,
+                    user: { password:              "foobaz",
+                            password_confirmation: "foobaz" } }
+    assert is_logged_in?
+    assert_not flash.empty?
+    assert_redirected_to user
+  end
+end
+#..............................
+
+リスト 12.18で使っているアイデアの大半は、本チュートリアルで既出です。
+今回の新しい要素はinputタグぐらいでしょう。
+
+assert_select "input[name=email][type=hidden][value=?]", user.email
+上のコードは、inputタグに正しい名前、type="hidden"、メールアドレスがあるかどうかを確認します。
+
+<input id="email" name="email" type="hidden" value="michael@example.com" />
+リスト 12.18のコードを使うと、テストコードは greenになるはずです。
+
+##..............................
+リスト 12.19: green
+#...............................
+$ rails test
+#..............................
+
+演習
+リスト 12.6にあるcreate_reset_digestメソッドはupdate_attributeを２回呼び出していますが、これは各行で１回ずつデータベースへ問い合わせしていることになります。
+リスト 12.20に記したテンプレートを使って、update_attributeの呼び出しを１回のupdate_columns呼び出しにまとめてみましょう (これでデータベースへの問い合わせが１回で済むようになります)。
+また、変更後にテストを実行し、 greenになることも確認してください。
+ちなみにリスト 12.20にあるコードには、前章の演習 (リスト 11.39) の解答も含まれています。
+リスト 12.21のテンプレートを埋めて、期限切れのパスワード再設定で発生する分岐 (リスト 12.16) を統合テストで網羅してみましょう (12.21 のコードにあるresponse.bodyは、そのページのHTML本文をすべて返すメソッドです)。
+期限切れをテストする方法はいくつかありますが、リスト 12.21でオススメした手法を使えば、レスポンスの本文に「expired」という語があるかどうかでチェックできます (なお、大文字と小文字は区別されません)。
+２時間経ったらパスワードを再設定できなくする方針は、セキュリティ的に好ましいやり方でしょう。
+しかし、もっと良くする方法はまだあります。
+例えば、公共の (または共有された) コンピューターでパスワード再設定が行われた場合を考えてみてください。
+仮にログアウトして離席したとしても、２時間以内であれば、そのコンピューターの履歴からパスワード再設定フォームを表示させ、パスワードを更新してしまうことができてしまいます (しかもそのままログイン機構まで突破されてしまいます!)。
+この問題を解決するために、リスト 12.22のコードを追加し、パスワードの再設定に成功したらダイジェストをnilになるように変更してみましょう5。
+リスト 12.18に１行追加し、１つ前の演習課題に対するテストを書いてみましょう。
+ヒント: リスト 9.25のassert_nilメソッドとリスト 11.33のuser.reloadメソッドを組み合わせて、reset_digest属性を直接テストしてみましょう。
+##..............................
+リスト 12.20: update_columnsを使用するテンプレート
+#...............................
+app/models/user.rb
+ class User < ApplicationRecord
+  attr_accessor :remember_token, :activation_token, :reset_token
+  before_save   :downcase_email
+  before_create :create_activation_digest
+  .
+  .
+  .
+  # アカウントを有効にする
+  def activate
+    update_columns(activated: true, activated_at: Time.zone.now)
+  end
+
+  # 有効化用のメールを送信する
+  def send_activation_email
+    UserMailer.account_activation(self).deliver_now
+  end
+
+  # パスワード再設定の属性を設定する
+  def create_reset_digest
+    self.reset_token = User.new_token
+    update_columns(reset_digest:  FILL_IN, reset_sent_at: FILL_IN)
+  end
+
+  # パスワード再設定用メールを送信する
+  def send_password_reset_email
+    UserMailer.password_reset(self).deliver_now
+  end
+
+  private
+
+    # メールアドレスをすべて小文字にする
+    def downcase_email
+      self.email = email.downcase
+    end
+
+    # 有効化トークンとダイジェストを作成および代入する
+    def create_activation_digest
+      self.activation_token  = User.new_token
+      self.activation_digest = User.digest(activation_token)
+    end
+end
+#..............................
+
+##..............................
+リスト 12.21: パスワード再設定の期限切れのテストgreen
+#...............................
+test/integration/password_resets_test.rb
+ require 'test_helper'
+
+class PasswordResetsTest < ActionDispatch::IntegrationTest
+
+  def setup
+    ActionMailer::Base.deliveries.clear
+    @user = users(:michael)
+  end
+  .
+  .
+  .
+  test "expired token" do
+    get new_password_reset_path
+    post password_resets_path,
+         params: { password_reset: { email: @user.email } }
+
+    @user = assigns(:user)
+    @user.update_attribute(:reset_sent_at, 3.hours.ago)
+    patch password_reset_path(@user.reset_token),
+          params: { email: @user.email,
+                    user: { password:              "foobar",
+                            password_confirmation: "foobar" } }
+    assert_response :redirect
+    follow_redirect!
+    assert_match /FILL_IN/i, response.body
+  end
+end
+#..............................
+
+##..............................
+リスト 12.22: パスワード再設定が成功したらダイジェストをnilにする
+#...............................
+app/controllers/password_resets_controller.rb
+ class PasswordResetsController < ApplicationController
+  .
+  .
+  .
+  def update
+    if params[:user][:password].empty?
+      @user.errors.add(:password, :blank)
+      render 'edit'
+    elsif @user.update_attributes(user_params)
+      log_in @user
+      @user.update_attribute(:reset_digest, nil)
+      flash[:success] = "Password has been reset."
+      redirect_to @user
+    else
+      render 'edit'
+    end
+  end
+  .
+  .
+  .
+end
+#..............................
+
+
+#-----------------------------
+[_ 12.4 ] 本番環境でのメール送信 (再掲)
+#-----------------------------
+
+これでパスワード再設定の実装も終わりました。
+あとは前章と同様に、development環境だけでなくproduction環境でも動くようにするだけです。
+セットアップの手順はアカウント有効化と全く同じです。
+したがって、もし既に前章でセットアップを終わらせていたら (11.4)、本章のリスト 12.24までスキップしてしまっても大丈夫です。
+
+本番環境からメール送信するために、「SendGrid」というHerokuアドオンを利用してアカウントを検証します (このアドオンを利用するためにはHerokuアカウントにクレジットカードを設定する必要がありますが、アカウント検証では料金は発生しません)。
+本チュートリアルでは、「starter tier」というサービスを使うことにします。
+これは、(執筆時点では) 1日のメール数が最大400通までという制限がありますが、無料で利用することができます。
+アドオンをアプリケーションに追加するには、次のコマンドを実行します。
+
+$ heroku addons:create sendgrid:starter
+注: herokuコマンドのバージョンが古いとここで失敗するかもしれません。
+その場合はHeroku Toolbeltを使って最新版に更新するか、次の古い文法のコマンドを試してみてください。
+
+$ heroku addons:add sendgrid:starter
+アプリケーションでSendGridアドオンを使うには、production環境のSMTPに情報を記入する必要があります。
+リスト 12.23に示したとおり、本番Webサイトのアドレスをhost変数に定義する必要もあります。
+
+##..............................
+リスト 12.23: Railsのproduction環境でSendGridを使う設定
+#...............................
+config/environments/production.rb
+ Rails.application.configure do
+  .
+  .
+  .
+  config.action_mailer.raise_delivery_errors = true
+  config.action_mailer.delivery_method = :smtp
+  host = '<your heroku app>.herokuapp.com'
+  config.action_mailer.default_url_options = { host: host }
+  ActionMailer::Base.smtp_settings = {
+    :address        => 'smtp.sendgrid.net',
+    :port           => '587',
+    :authentication => :plain,
+    :user_name      => ENV['SENDGRID_USERNAME'],
+    :password       => ENV['SENDGRID_PASSWORD'],
+    :domain         => 'heroku.com',
+    :enable_starttls_auto => true
+  }
+  .
+  .
+  .
+end
+#..............................
+
+リスト 11.41のメール設定にはSendGridアカウントのuser_nameとpassword設定を記入する行もありますが、そこには記入せず、必ず環境変数「ENV」に設定するよう十分ご注意ください。
+本番運用するアプリケーションでは、暗号化されていないIDやパスワードのような重要なセキュリティ情報は「絶対に」ソースコードに直接書き込まないでください。
+そのような情報は環境変数に記述し、そこからアプリケーションに読み込む必要があります。
+今回の場合、そうした変数はSendGridアドオンが自動的に設定してくれますが、13.4.4では環境変数を自分で設定しなければなりません。
+
+この時点で、Gitのトピックブランチをmasterにマージしておきましょう (リスト 12.24)。
+
+##..............................
+リスト 12.24: Merging the password-reset branch into master.
+#...............................
+$ rails test
+$ git add -A
+$ git commit -m "Add password reset"
+$ git checkout master
+$ git merge password-reset
+#..............................
+
+続いてリモートリポジトリにプッシュし、Herokuにデプロイします。
+
+$ rails test
+$ git push
+$ git push heroku
+$ heroku run rails db:migrate
+Herokuへのデプロイが完了したら、ログインページの [forgot password] リンクをクリックして、production環境でパスワードの再設定を行ってみましょう (図 12.4)。
+フォームから送信すると、図 12.14のようなメールが送信されてくるはずです。
+記載されているリンクをクリックし、無効なパスワードと有効なパスワードをそれぞれ試してみましょう。
+ここまで実装がうまくいっていれば、それぞれ図 12.12と図 12.13のような結果を得られるはずです。
+
+
+#.....................
+images/figures/reset_email_production_4th_ed
+  ==> reset_email_production_4th_ed.png
+図 12.14: production環境から送信したパスワード再設定メール
+#.....................
+
+演習
+production環境でユーザー登録を試してみましょう。
+ユーザー登録時に入力したメールアドレスにメールは届きましたか?
+メールを受信できたら、実際にメールをクリックしてアカウントを有効化してみましょう。
+また、Heroku上のログを調べてみて、有効化に関するログがどうなっているのか調べてみてください。
+ヒント: ターミナルからheroku logsコマンドを実行してみましょう。
+アカウントを有効化できたら、今度はパスワードの再設定を試してみましょう。
+正しくパスワードの再設定ができたでしょうか?
+
+#-----------------------------
+[_ 12.5 ] 最後に
+#-----------------------------
+
+パスワード再設定の実装が終わったことにより、サンプルアプリケーションのユーザー登録・ログイン・ログアウトの仕組みは、本物のアプリケーションと近いレベルに仕上がりました。
+Railsチュートリアルの残りの章では、Twitterのようなマイクロポスト機能 (第13章) と、フォロー中のユーザーの投稿を表示するステータスフィード機能 (第14章) を実装していきましょう。
+これらの章では、Railsの強力な機能 (画像アップロード、カスタマイズしたデータベースへの問い合わせ、has_manyやhas_many :throughを使った高度なデータベースモデリングなど) を多数紹介する予定です。
+
+
+#-----------------------------------------------------
+[__ 12.5.1 ] 本章のまとめ
+#-----------------------------------------------------
+
+パスワードの再設定は Active Recordオブジェクトではないが、セッションやアカウント有効化の場合と同様に、リソースでモデル化できる
+Railsは、メール送信で扱うAction Mailerのアクションとビューを生成することができる
+Action MailerではテキストメールとHTMLメールの両方を利用できる
+メイラーアクションで定義したインスタンス変数は、他のアクションやビューと同様、メイラーのビューから参照できる
+パスワードを再設定させるために、生成したトークンを使って一意のURLを作る
+より安全なパスワード再設定のために、ハッシュ化したトークン (ダイジェスト) を使う
+メイラーのテストと統合テストは、どちらもUserメイラーの振舞いを確認するのに有用
+SendGridを使うとproduction環境からメールを送信できる
+
+#-----------------------------
+[_ 12.6 ] 証明: 期限切れの比較
+#-----------------------------
+
+12.3では、パスワードの期限が切れたかどうかを調べるために、次の比較を行いました。
+
+reset_sent_at < 2.hours.ago
+リスト 12.17で説明したように、この式を「少ない」と解釈すると逆の意味になってしまいますので、「早い」と解釈してみてください6。
+
+最初に、期間を2つ定義します。
+Δ
+t
+r
+をパスワード再設定メールを送信してからの期間、
+Δ
+t
+e
+をパスワード再設定の有効な期間 (例: 2時間) と定めます。
+パスワードの再設定は、メールが送信された時刻から経過した期間が、有効期間よりも長くなった場合に「期限切れ」となります。
+これを次のように表します。
+
+Δ
+t
+r
+>
+Δ
+t
+e
+.
+  
+(12.1)
+ 
+ここで、現在時刻 (訳注: 比較を行った時刻) を
+t
+N
+、パスワード再設定メールの送信時刻を
+t
+r
+、有効期間が切れる時刻 (例: 2時間前) を
+t
+e
+と表すと、次の2つの関係式を得ることができます。
+
+Δ
+t
+r
+=
+t
+N
+−
+t
+r
+  
+(12.2)
+ 
+Δ
+t
+e
+=
+t
+N
+−
+t
+e
+.
+  
+(12.3)
+ 
+式 (12.2)と式 (12.3)を式 (12.1)に代入すると、次の結果が得られます。
+
+Δ
+t
+r
+>
+Δ
+t
+e
+t
+N
+−
+t
+r
+>
+t
+N
+−
+t
+e
+−
+t
+r
+>
+−
+t
+e
+,
+両辺に
+−
+1
+をかけると、次の式が得られます。
+
+t
+r
+<
+t
+e
+.
+  
+(12.4)
+ 
+式 (12.4)をRailsのコードに置き換え、値を
+t
+e
+=
+2
+ 
+時
+間
+前
+とすると、リスト 12.17のpassword_reset_expired?メソッドと同じコードになります。
+
+def password_reset_expired?
+  reset_sent_at < 2.hours.ago
+end
+12.3でも説明したとおり、<記号を「〜より少ない」ではなく「〜より早い時刻」と解釈すれば、「パスワードの再設定は、現在より2時間以上前の時刻に行われた」という言明と一致します。
+
+
+NOTE: 1 
+本章は他の章からほぼ独立しています。
+唯一依存しているのはリスト 11.6によるメイラーの生成部分です。
+とはいえ、本章の内容は第11章と似通っている部分も多いので、そちらの章を進めてから本章に取り掛かった方が理解が容易になるでしょう。
+ ↑
+
+NOTE: 2 
+よくあるセキュリティに対する懸念の１つに「そのメールアドレスが登録されているかどうかを表示してしまってよいのか?」というものがありますが、この懸念は見当はずれです。
+なぜなら、ユーザー登録のフォームで「そのメールアドレスが既に使われているかどうか」をチェックしていて、その結果を表示しているからです。
+このため、メールアドレスが使われているかどうかの情報を今回表示したとしても、クラッカーに対して何ら新しい情報を与えていないことになります。
+ ↑
+
+NOTE: 3 
+この場合、パスワードフィールドが空である場合だけを扱います。
+パスワードの確認フィールドが空の場合は、確認フィールドのバリデーションで検出され、エラーメッセージが表示されるので不要です。
+ただし、パスワードフィールドとパスワード確認フィールドが両方空だとバリデーションがスキップされてしまいます。
+ ↑
+
+NOTE: 4 
+読者のKhaled Teilabからerrors.add(:password, :blank)を使った方が便利だと指摘してもらいました。
+blankオプションを使う利点の１つは、rails-i18n gemを使って多言語化していた場合、それぞれの言語における適切なメッセージを表示している点です (訳注: 元々は英語でエラーメッセージを書いていましたが、blankオプションに切り替わりました)。
+ ↑
+
+NOTE: 5 
+この問題を指摘してくれた Tristan Ludowyk に感謝します。
+このような機能の提案と実装だけでなく、説明文まで提供していただきました。
+ ↑
+この証明は物理学で博士号を取得した人間が書いているので、きっと読む価値があると思います。
+ただそんな人でも、 
+(
+−
+ℏ
+2
+2
+m
+∇
+2
++
+V
+)
+ψ
+=
+E
+ψ
+ や 
+G
+μ
+ν
+=
+8
+π
+T
+μ
+ν
+(
+=
+4
+τ
+T
+μ
+ν
+)
+
+NOTE: 6 
+ といった式を単純明快に説明するのは至難のワザでした...。
+ ↑
+«前の章次の章»
